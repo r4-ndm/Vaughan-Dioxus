@@ -1,0 +1,22 @@
+[workspace]
+resolver = "2"
+members = [
+    "vaughan-core",
+    "vaughan-dioxus",
+    "vaughan-tauri-browser",
+    "vaughan-ipc-types",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Vaughan Team"]
+license = "MIT OR Apache-2.0"
+repository = ""
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

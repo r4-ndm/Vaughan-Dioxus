@@ -1,0 +1,30 @@
+# cargo-deny configuration for Vaughan-Dioxus workspace
+# Run: cargo install cargo-deny && cargo deny check
+# (Vulnerabilities are always denied by default; no separate option.)
+
+[advisories]
+# Only fail unmaintained for workspace direct deps (transitive e.g. gtk in wry are allowed)
+unmaintained = "workspace"
+# ignore = ["RUSTSEC-2024-0413"]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Skip tree for transitive deps we don't control (optional)
+# skip-tree = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "warn"
+
+[licenses]
+unlicensed = "deny"
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+]
+deny = []
+confidence-threshold = 0.8

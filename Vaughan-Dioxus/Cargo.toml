@@ -1,0 +1,27 @@
+[package]
+name = "vaughan-dioxus"
+version.workspace = true
+edition.workspace = true
+description = "Vaughan wallet GUI (Dioxus desktop + mobile)"
+
+[[bin]]
+name = "vaughan-dioxus"
+path = "src/main.rs"
+
+[dependencies]
+vaughan-core = { path = "../vaughan-core" }
+dioxus = { version = "0.7", features = ["desktop"] }
+dioxus-desktop = { version = "0.7", optional = true }
+dioxus-mobile = { version = "0.7.0-alpha.2", optional = true }
+tokio = { version = "1", features = ["sync", "rt", "macros", "time"] }
+futures-util = "0.3"
+arboard = "3"
+qrcode = { version = "0.14", optional = true }
+
+[features]
+default = ["desktop"]
+audio = ["vaughan-core/audio"]
+qr = ["dep:qrcode"]
+hardware-wallets = ["vaughan-core/hardware-wallets"]
+desktop = ["dioxus-desktop"]
+mobile = ["dioxus-mobile"]
