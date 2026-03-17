@@ -6,3 +6,7 @@ description = "Shared IPC message types for wallet <-> dApp browser"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+
+[dev-dependencies]
+serde_json = "1"

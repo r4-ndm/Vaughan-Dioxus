@@ -3,5 +3,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    vaughan_tauri_browser_lib::run()
+    vaughan_tauri_browser::run()
 }
