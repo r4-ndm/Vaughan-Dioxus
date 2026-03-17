@@ -1,0 +1,25 @@
+{
+  "productName": "Vaughan dApp Browser",
+  "version": "0.1.0",
+  "identifier": "com.vaughan.dapp-browser",
+  "build": {
+    "frontendDist": ["index.html"]
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Vaughan - dApp Browser",
+        "width": 1200,
+        "height": 800,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self' https: data: blob:; connect-src ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": false
+  }
+}
