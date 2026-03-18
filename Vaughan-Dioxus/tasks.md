@@ -229,15 +229,15 @@
 
 ## Task 30: dApp Browser – Tauri Host Application
 
-- [ ] 30.1 Create new Tauri project (vaughan-tauri-browser) with dependencies: tauri, dioxus-desktop, interprocess, vaughan-ipc-types
-- [ ] 30.2 Configure tauri.conf.json (window title, size, CSP, macOS LSUIElement)
-- [ ] 30.3 Implement IPC client in Tauri backend (parse CLI args, connect to wallet, perform handshake)
-- [ ] 30.4 Spawn background task to forward messages between Tauri commands and IPC stream
-- [ ] 30.5 Build dApp browser UI with Dioxus inside Tauri (address bar, back/forward, refresh, connection status)
-- [ ] 30.6 Apply shared theme to browser UI
-- [ ] 30.7 Implement EIP-1193 provider injection script (window.ethereum, request, on, removeListener)
-- [ ] 30.8 Implement EIP-6963 wallet discovery protocol (announceProvider, requestProvider events)
-- [ ] 30.9 Implement all required EIP-1193 JSON-RPC methods (eth_requestAccounts, eth_sendTransaction, personal_sign, eth_signTypedData_v4, wallet_switchEthereumChain, etc.)
+- [x] 30.1 Create new Tauri project (vaughan-tauri-browser) with dependencies: tauri, dioxus-desktop, interprocess, vaughan-ipc-types
+- [x] 30.2 Configure tauri.conf.json (window title, size, CSP, macOS LSUIElement)
+- [x] 30.3 Implement IPC client in Tauri backend (parse CLI args, connect to wallet, perform handshake)
+- [x] 30.4 Spawn background task to forward messages between Tauri commands and IPC stream
+- [x] 30.5 Build dApp browser UI with Dioxus inside Tauri (address bar, back/forward, refresh, connection status)
+- [x] 30.6 Apply shared theme to browser UI
+- [x] 30.7 Implement EIP-1193 provider injection script (window.ethereum, request, on, removeListener)
+- [x] 30.8 Implement EIP-6963 wallet discovery protocol (announceProvider, requestProvider events)
+- [x] 30.9 Implement all required EIP-1193 JSON-RPC methods (eth_requestAccounts, eth_sendTransaction, personal_sign, eth_signTypedData_v4, wallet_switchEthereumChain, etc.)
 - [ ] 30.10 Implement all required EIP-1193 events (connect, disconnect, accountsChanged, chainChanged)
 - [ ] 30.11 Implement EIP-1193 standard error codes (4001, 4100, 4200, 4900, -32xxx)
 - [ ]* 30.12 Write unit tests for Tauri browser components
