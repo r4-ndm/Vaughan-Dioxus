@@ -132,6 +132,7 @@ pub enum IpcResponse {
     Accounts(Vec<AccountInfo>),
     SignedTransaction(String),
     SignedMessage(String),
+    SignedTypedData(String),
     NetworkInfo(NetworkInfo),
     Error { code: u32, message: String },
 }
@@ -213,9 +214,11 @@ fn validate_decimal_u256ish(value: &str) -> Result<(), ValidationError> {
     if !v.as_bytes().iter().all(|b| matches!(b, b'0'..=b'9')) {
         return Err(ValidationError::InvalidValue);
     }
-    // Don't attempt full U256 parsing here; ensure it's at least parseable as u128
-    // for basic sanity and avoid huge allocations.
-    let _ = v.parse::<u128>().map_err(|_| ValidationError::InvalidValue)?;
+    // We accept decimal values that fit within a typical U256 digit budget.
+    // (Max U256 is ~78 decimal digits; we use 78 as a pragmatic upper bound.)
+    if v.len() > 78 {
+        return Err(ValidationError::InvalidValue);
+    }
     Ok(())
 }
 
@@ -238,6 +241,17 @@ mod tests {
         let back: IpcEnvelope<IpcRequest> = serde_json::from_str(&s).unwrap();
         assert_eq!(back.id, 1);
         back.body.validate().unwrap();
+    }
+
+    #[test]
+    fn serde_roundtrip_typed_data_response() {
+        let resp = IpcResponse::SignedTypedData("0xsig".into());
+        let s = serde_json::to_string(&resp).unwrap();
+        let back: IpcResponse = serde_json::from_str(&s).unwrap();
+        match back {
+            IpcResponse::SignedTypedData(s) => assert_eq!(s, "0xsig"),
+            _ => panic!("unexpected response type"),
+        }
     }
 
     #[test]
