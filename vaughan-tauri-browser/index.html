@@ -168,6 +168,14 @@
       let currentChainIdHex = null;
       let firstConnectEmitted = false;
 
+      function emitDisconnect(err) {
+        currentAccounts = [];
+        currentChainIdHex = null;
+        firstConnectEmitted = false;
+        // EIP-1193 disconnect: payload is a ProviderRpcError-ish object.
+        emitter.emit("disconnect", err ?? { code: 4100, message: "Wallet disconnected" });
+      }
+
       async function fetchNetworkInfo() {
         const resp = await tauriInvoke("ipc_request", {
           request: { type: "GetNetworkInfo" },
@@ -365,6 +373,11 @@
 
             throw makeEthRpcError(4200, `Unsupported method: ${method}`);
           } catch (e) {
+            // On disconnect-like errors, notify listeners.
+            if (e && (e.code === 4100 || e.code === 4900)) {
+              emitDisconnect(e);
+            }
+
             // Surface EIP-1193 style errors.
             throw e;
           }
@@ -493,6 +506,8 @@
         );
       } catch (e) {
         setStatus("error", `IPC unavailable`);
+        // No wallet connection -> treat as disconnect.
+        emitDisconnect(e);
       }
     }
 
