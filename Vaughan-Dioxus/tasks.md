@@ -238,7 +238,7 @@
 - [x] 30.7 Implement EIP-1193 provider injection script (window.ethereum, request, on, removeListener)
 - [x] 30.8 Implement EIP-6963 wallet discovery protocol (announceProvider, requestProvider events)
 - [x] 30.9 Implement all required EIP-1193 JSON-RPC methods (eth_requestAccounts, eth_sendTransaction, personal_sign, eth_signTypedData_v4, wallet_switchEthereumChain, etc.)
-- [ ] 30.10 Implement all required EIP-1193 events (connect, disconnect, accountsChanged, chainChanged)
+- [x] 30.10 Implement all required EIP-1193 events (connect, disconnect, accountsChanged, chainChanged)
 - [ ] 30.11 Implement EIP-1193 standard error codes (4001, 4100, 4200, 4900, -32xxx)
 - [ ]* 30.12 Write unit tests for Tauri browser components
 
