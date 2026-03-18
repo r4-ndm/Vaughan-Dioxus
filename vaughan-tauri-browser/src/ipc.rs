@@ -28,7 +28,7 @@ pub enum IpcClientError {
 ///
 /// This is intentionally sequential: one request at a time.
 pub struct IpcClient {
-    stream: LocalSocketStream,
+    reader: BufReader<LocalSocketStream>,
     read_buf: String,
 }
 
@@ -50,7 +50,7 @@ impl IpcClient {
             .map_err(|e| IpcClientError::Connect(e.to_string()))?;
 
         let mut client = Self {
-            stream,
+            reader: BufReader::new(stream),
             read_buf: String::new(),
         };
 
@@ -70,7 +70,8 @@ impl IpcClient {
 
         // Send handshake line.
         let line = serde_json::to_string(&hs).map_err(|e| IpcClientError::Serde(e.to_string()))?;
-        timeout(op_timeout, self.stream.write_all(format!("{line}\n").as_bytes()))
+        let stream = self.reader.get_mut();
+        timeout(op_timeout, stream.write_all(format!("{line}\n").as_bytes()))
             .await
             .map_err(|_| IpcClientError::Timeout)?
             .map_err(|e| IpcClientError::Io(e.to_string()))?;
@@ -91,7 +92,8 @@ impl IpcClient {
 
         let env = IpcEnvelope { id, body: req };
         let line = serde_json::to_string(&env).map_err(|e| IpcClientError::Serde(e.to_string()))?;
-        timeout(op_timeout, self.stream.write_all(format!("{line}\n").as_bytes()))
+        let stream = self.reader.get_mut();
+        timeout(op_timeout, stream.write_all(format!("{line}\n").as_bytes()))
             .await
             .map_err(|_| IpcClientError::Timeout)?
             .map_err(|e| IpcClientError::Io(e.to_string()))?;
@@ -103,12 +105,12 @@ impl IpcClient {
         Ok(resp)
     }
 
-    async fn read_line_json<T: serde::de::DeserializeOwned>(&mut self, op_timeout: Duration) -> Result<T, IpcClientError> {
-        // Use a BufReader on top of the stream each time; for low volume this is fine.
-        // The server side will be implemented similarly and can be optimized later.
-        let mut reader = BufReader::new(&mut self.stream);
+    async fn read_line_json<T: serde::de::DeserializeOwned>(
+        &mut self,
+        op_timeout: Duration,
+    ) -> Result<T, IpcClientError> {
         self.read_buf.clear();
-        timeout(op_timeout, reader.read_line(&mut self.read_buf))
+        timeout(op_timeout, self.reader.read_line(&mut self.read_buf))
             .await
             .map_err(|_| IpcClientError::Timeout)?
             .map_err(|e| IpcClientError::Io(e.to_string()))?;
