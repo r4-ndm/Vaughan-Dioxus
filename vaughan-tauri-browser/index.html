@@ -3,9 +3,203 @@
 <head>
   <meta charset="UTF-8">
   <title>Vaughan dApp Browser</title>
+  <style>
+    :root {
+      --bg: #0b0b0b;
+      --panel: #121212;
+      --text: #e6e6e6;
+      --muted: #a7a7a7;
+      --border: #222;
+      --accent: #7c5cff;
+    }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+    }
+    button {
+      background: #0f0f0f;
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 8px 10px;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    input {
+      flex: 1;
+      background: #0f0f0f;
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 9px 10px;
+      border-radius: 8px;
+      outline: none;
+    }
+    .status {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding-left: 10px;
+      color: var(--muted);
+      font-size: 13px;
+      white-space: nowrap;
+    }
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: #555;
+    }
+    .dot.connected {
+      background: var(--accent);
+    }
+    .dot.error {
+      background: #ff4d4d;
+    }
+    .content {
+      width: 100%;
+      height: calc(100vh - 54px);
+    }
+    iframe {
+      width: 100%;
+      height: 100%;
+      border: 0;
+      background: white;
+    }
+  </style>
 </head>
 <body>
-  <h1>Vaughan dApp Browser</h1>
-  <p>WebView placeholder. Dioxus browser chrome + EIP-1193 injection will go here.</p>
+  <header>
+    <button id="backBtn" disabled>◀</button>
+    <button id="fwdBtn" disabled>▶</button>
+    <button id="refreshBtn">⟳</button>
+
+    <input id="addressBar" placeholder="Enter URL (e.g. https://example.com)" />
+
+    <div class="status" id="status">
+      <span class="dot" id="statusDot"></span>
+      <span id="statusText">Not connected</span>
+    </div>
+  </header>
+
+  <div class="content">
+    <iframe id="webview" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>
+  </div>
+
+  <script>
+    function tauriInvoke(cmd, args) {
+      const inv =
+        window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke
+          ? window.__TAURI__.core.invoke
+          : window.__TAURI__ && window.__TAURI__.invoke
+          ? window.__TAURI__.invoke
+          : null;
+      if (!inv) return Promise.reject(new Error("Tauri invoke not available"));
+      return inv(cmd, args);
+    }
+
+    const backBtn = document.getElementById("backBtn");
+    const fwdBtn = document.getElementById("fwdBtn");
+    const refreshBtn = document.getElementById("refreshBtn");
+    const addressBar = document.getElementById("addressBar");
+    const iframe = document.getElementById("webview");
+
+    const statusDot = document.getElementById("statusDot");
+    const statusText = document.getElementById("statusText");
+
+    let historyStack = [];
+    let historyIndex = -1;
+
+    function setStatus(variant, text) {
+      statusDot.classList.remove("connected");
+      statusDot.classList.remove("error");
+      if (variant === "connected") statusDot.classList.add("connected");
+      if (variant === "error") statusDot.classList.add("error");
+      statusText.textContent = text;
+    }
+
+    function navigate(url, { push = true } = {}) {
+      if (!url) return;
+      const normalized = url.trim();
+      if (!normalized) return;
+
+      if (push) {
+        // Drop forward history on new navigation.
+        historyStack = historyStack.slice(0, historyIndex + 1);
+        historyStack.push(normalized);
+        historyIndex = historyStack.length - 1;
+      }
+
+      iframe.src = normalized;
+      addressBar.value = normalized;
+
+      backBtn.disabled = historyIndex <= 0;
+      fwdBtn.disabled = historyIndex >= historyStack.length - 1;
+    }
+
+    backBtn.addEventListener("click", () => {
+      if (historyIndex <= 0) return;
+      historyIndex -= 1;
+      navigate(historyStack[historyIndex], { push: false });
+    });
+
+    fwdBtn.addEventListener("click", () => {
+      if (historyIndex >= historyStack.length - 1) return;
+      historyIndex += 1;
+      navigate(historyStack[historyIndex], { push: false });
+    });
+
+    refreshBtn.addEventListener("click", () => {
+      if (!iframe.src) return;
+      // Refresh by re-setting src.
+      const current = iframe.src;
+      iframe.src = "about:blank";
+      setTimeout(() => (iframe.src = current), 50);
+    });
+
+    addressBar.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter") return;
+      let url = addressBar.value.trim();
+      if (!/^https?:\/\//i.test(url)) url = "https://" + url;
+      navigate(url);
+    });
+
+    async function checkConnection() {
+      try {
+        setStatus(null, "Connecting...");
+        const resp = await tauriInvoke("ipc_request", {
+          request: { type: "GetNetworkInfo" }
+        });
+
+        if (resp && resp.type === "NetworkInfo") {
+          setStatus("connected", `Connected to network: ${resp.payload.name} (${resp.payload.chain_id})`);
+        } else if (resp && resp.type === "Error") {
+          setStatus("error", `IPC error: ${resp.payload.message || "unknown"}`);
+        } else {
+          setStatus("error", "Unexpected IPC response");
+        }
+      } catch (e) {
+        setStatus("error", `IPC unavailable`);
+      }
+    }
+
+    // Start on load.
+    checkConnection().finally(() => {
+      // Default to about:blank; user can paste a URL.
+      navigate("about:blank", { push: false });
+    });
+  </script>
 </body>
 </html>
