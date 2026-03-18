@@ -256,6 +256,36 @@
         removeListener: (event, handler) => emitter.removeListener(event, handler),
       };
 
+      // ------------------------------------------------------------
+      // EIP-6963 wallet discovery (Task 30.8)
+      // ------------------------------------------------------------
+      // dApps can listen for `eip6963:announceProvider` and can request discovery
+      // by dispatching `eip6963:requestProvider`.
+
+      const providerInfo = {
+        uuid: `vaughan-${Date.now()}`,
+        name: "Vaughan",
+      };
+
+      function announceProvider() {
+        try {
+          window.dispatchEvent(
+            new CustomEvent("eip6963:announceProvider", {
+              detail: { info: providerInfo, provider: window.ethereum },
+            })
+          );
+        } catch (e) {
+          console.error("Failed to announce EIP-6963 provider", e);
+        }
+      }
+
+      window.addEventListener("eip6963:requestProvider", () => {
+        announceProvider();
+      });
+
+      // Also announce immediately on load.
+      announceProvider();
+
     const backBtn = document.getElementById("backBtn");
     const fwdBtn = document.getElementById("fwdBtn");
     const refreshBtn = document.getElementById("refreshBtn");
