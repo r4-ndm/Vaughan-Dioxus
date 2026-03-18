@@ -123,6 +123,139 @@
       return inv(cmd, args);
     }
 
+      // ------------------------------------------------------------
+      // EIP-1193 provider injection (Task 30.7)
+      // ------------------------------------------------------------
+
+      function makeEthRpcError(code, message) {
+        const err = new Error(message);
+        err.code = code;
+        return err;
+      }
+
+      function createEmitter() {
+        const listeners = new Map();
+        return {
+          on(event, handler) {
+            const arr = listeners.get(event) ?? [];
+            arr.push(handler);
+            listeners.set(event, arr);
+          },
+          removeListener(event, handler) {
+            const arr = listeners.get(event) ?? [];
+            listeners.set(
+              event,
+              arr.filter((h) => h !== handler)
+            );
+          },
+          emit(event, payload) {
+            const arr = listeners.get(event) ?? [];
+            for (const h of arr) {
+              try {
+                h(payload);
+              } catch (e) {
+                // Best-effort: never crash the dApp due to user handler bugs.
+                console.error(e);
+              }
+            }
+          },
+        };
+      }
+
+      const emitter = createEmitter();
+
+      let currentAccounts = [];
+      let currentChainIdHex = null;
+      let firstConnectEmitted = false;
+
+      async function fetchNetworkInfo() {
+        const resp = await tauriInvoke("ipc_request", {
+          request: { type: "GetNetworkInfo" },
+        });
+        if (resp?.type === "NetworkInfo") return resp.payload;
+        throw makeEthRpcError(4100, "Wallet not connected");
+      }
+
+      async function fetchAccounts() {
+        const resp = await tauriInvoke("ipc_request", {
+          request: { type: "GetAccounts" },
+        });
+        if (resp?.type === "Accounts") return resp.payload.map((a) => a.address);
+        throw makeEthRpcError(4100, "Wallet not connected");
+      }
+
+      function toHexChainId(dec) {
+        try {
+          const n = typeof dec === "string" ? BigInt(dec) : BigInt(dec);
+          return "0x" + n.toString(16);
+        } catch {
+          return "0x0";
+        }
+      }
+
+      // Inject provider into the page context.
+      // Note: in this early browser foundation, the webview chrome uses an iframe;
+      // full cross-origin dApp injection will be completed in later Task 30.x steps.
+      window.ethereum = {
+        isMetaMask: true,
+        request: async ({ method, params } = {}) => {
+          const m = (method ?? "").toLowerCase();
+          try {
+            if (m === "eth_requestaccounts" || m === "eth_accounts") {
+              const accounts = await fetchAccounts();
+              currentAccounts = accounts;
+              emitter.emit("accountsChanged", accounts);
+
+              if (!firstConnectEmitted) {
+                firstConnectEmitted = true;
+                emitter.emit("connect", { chainId: currentChainIdHex, accounts });
+              }
+              return accounts;
+            }
+
+            if (m === "eth_chainid") {
+              const net = await fetchNetworkInfo();
+              currentChainIdHex = toHexChainId(net.chain_id);
+              emitter.emit("chainChanged", currentChainIdHex);
+              return currentChainIdHex;
+            }
+
+            if (m === "wallet_switchethereumchain") {
+              const chainId = params?.[0]?.chainId;
+              if (!chainId) {
+                throw makeEthRpcError(4001, "Missing chainId");
+              }
+
+              // Accept `0x...` or decimal strings.
+              let decChainId;
+              if (typeof chainId === "string" && chainId.startsWith("0x")) {
+                decChainId = BigInt(chainId).toString();
+              } else {
+                decChainId = BigInt(chainId).toString();
+              }
+
+              const resp = await tauriInvoke("ipc_request", {
+                request: { type: "SwitchChain", payload: { chain_id: Number(decChainId) } },
+              });
+              if (resp?.type === "Error") throw makeEthRpcError(4200, resp.payload?.message ?? "Switch failed");
+
+              const net = await fetchNetworkInfo();
+              currentChainIdHex = toHexChainId(net.chain_id);
+              emitter.emit("chainChanged", currentChainIdHex);
+
+              return null;
+            }
+
+            throw makeEthRpcError(4200, `Unsupported method: ${method}`);
+          } catch (e) {
+            // Surface EIP-1193 style errors.
+            throw e;
+          }
+        },
+        on: (event, handler) => emitter.on(event, handler),
+        removeListener: (event, handler) => emitter.removeListener(event, handler),
+      };
+
     const backBtn = document.getElementById("backBtn");
     const fwdBtn = document.getElementById("fwdBtn");
     const refreshBtn = document.getElementById("refreshBtn");
@@ -192,17 +325,25 @@
     async function checkConnection() {
       try {
         setStatus(null, "Connecting...");
-        const resp = await tauriInvoke("ipc_request", {
-          request: { type: "GetNetworkInfo" }
-        });
 
-        if (resp && resp.type === "NetworkInfo") {
-          setStatus("connected", `Connected to network: ${resp.payload.name} (${resp.payload.chain_id})`);
-        } else if (resp && resp.type === "Error") {
-          setStatus("error", `IPC error: ${resp.payload.message || "unknown"}`);
-        } else {
-          setStatus("error", "Unexpected IPC response");
+        // Prime connection state so the provider can immediately answer calls.
+        const net = await fetchNetworkInfo();
+        currentChainIdHex = toHexChainId(net.chain_id);
+        emitter.emit("chainChanged", currentChainIdHex);
+
+        const accounts = await fetchAccounts();
+        currentAccounts = accounts;
+        emitter.emit("accountsChanged", accounts);
+
+        if (!firstConnectEmitted) {
+          firstConnectEmitted = true;
+          emitter.emit("connect", { chainId: currentChainIdHex, accounts });
         }
+
+        setStatus(
+          "connected",
+          `Connected to network: ${net.name} (${net.chain_id})`
+        );
       } catch (e) {
         setStatus("error", `IPC unavailable`);
       }
