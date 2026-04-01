@@ -6,7 +6,9 @@ use interprocess::local_socket::ToFsName;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::time::timeout;
 
-use vaughan_ipc_types::{Handshake, IpcEnvelope, IpcRequest, IpcResponse, ValidationError, IPC_VERSION};
+use vaughan_ipc_types::{
+    Handshake, IpcEnvelope, IpcRequest, IpcResponse, ValidationError, IPC_VERSION,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum IpcClientError {
@@ -33,7 +35,11 @@ pub struct IpcClient {
 }
 
 impl IpcClient {
-    pub async fn connect(endpoint: &str, token: &str, op_timeout: Duration) -> Result<Self, IpcClientError> {
+    pub async fn connect(
+        endpoint: &str,
+        token: &str,
+        op_timeout: Duration,
+    ) -> Result<Self, IpcClientError> {
         #[cfg(windows)]
         let name = endpoint
             .to_fs_name::<interprocess::os::windows::local_socket::NamedPipe>()
@@ -54,9 +60,7 @@ impl IpcClient {
             read_buf: String::new(),
         };
 
-        client
-            .handshake(token, op_timeout)
-            .await?;
+        client.handshake(token, op_timeout).await?;
 
         Ok(client)
     }
@@ -119,4 +123,3 @@ impl IpcClient {
         serde_json::from_str(s).map_err(|e| IpcClientError::Serde(e.to_string()))
     }
 }
-

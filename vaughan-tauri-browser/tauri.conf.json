@@ -6,17 +6,11 @@
     "frontendDist": ["index.html"]
   },
   "app": {
-    "windows": [
-      {
-        "title": "Vaughan - dApp Browser",
-        "width": 1200,
-        "height": 800,
-        "resizable": true,
-        "fullscreen": false
-      }
-    ],
+    "windows": [],
+    "withGlobalTauri": true,
     "security": {
-      "csp": "default-src 'self' https: data: blob:; connect-src ipc: http://ipc.localhost"
+      "csp": "default-src 'self' https: data: blob:; connect-src ipc: http://ipc.localhost",
+      "capabilities": ["default"]
     }
   },
   "bundle": {

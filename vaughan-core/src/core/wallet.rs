@@ -67,7 +67,10 @@ impl WalletState {
         self.accounts.read().await.clone()
     }
 
-    pub async fn set_active_account_by_id(&self, id: crate::core::AccountId) -> Result<(), WalletError> {
+    pub async fn set_active_account_by_id(
+        &self,
+        id: crate::core::AccountId,
+    ) -> Result<(), WalletError> {
         let accounts = self.accounts.read().await;
         let found = accounts.iter().find(|a| a.id == id).cloned();
         drop(accounts);
@@ -82,6 +85,13 @@ impl WalletState {
 
     pub async fn active_account(&self) -> Option<Account> {
         self.active_account.read().await.clone()
+    }
+
+    /// Clear in-memory accounts and lock (after keychain wipe or full reset).
+    pub async fn clear_ephemeral_state(&self) {
+        self.accounts.write().await.clear();
+        *self.active_account.write().await = None;
+        *self.locked.write().await = true;
     }
 
     fn ensure_unlocked(&self, locked: bool) -> Result<(), WalletError> {
@@ -137,10 +147,18 @@ impl WalletState {
     }
 }
 
+impl Default for WalletState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chains::{Balance, ChainInfo, ChainTransaction, ChainType, Fee, TokenInfo, TxRecord, TxStatus, TxHash};
+    use crate::chains::{
+        Balance, ChainInfo, ChainTransaction, ChainType, Fee, TokenInfo, TxHash, TxRecord, TxStatus,
+    };
     use async_trait::async_trait;
 
     struct DummyAdapter;
@@ -224,8 +242,8 @@ mod tests {
     }
 
     fn dummy_account() -> Account {
-        use alloy::primitives::Address;
         use crate::core::{AccountId, AccountType};
+        use alloy::primitives::Address;
 
         Account {
             id: AccountId::new(),
@@ -264,7 +282,10 @@ mod tests {
         state.add_account(dummy_account()).await;
 
         // Locked: should error
-        let err = state.get_active_balance().await.expect_err("locked wallet must error");
+        let err = state
+            .get_active_balance()
+            .await
+            .expect_err("locked wallet must error");
         matches!(err, WalletError::WalletLocked);
 
         // Unlocked: should succeed
@@ -273,4 +294,3 @@ mod tests {
         assert_eq!(bal.raw, "1");
     }
 }
-

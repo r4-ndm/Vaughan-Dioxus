@@ -18,7 +18,10 @@ struct AttemptState {
 
 impl AttemptState {
     fn new() -> Self {
-        Self { failures: 0, locked_until: None }
+        Self {
+            failures: 0,
+            locked_until: None,
+        }
     }
 }
 
@@ -49,7 +52,9 @@ impl AuthRateLimiter {
 
     pub async fn register_failure(&self, key: &str) -> Result<(), WalletError> {
         let mut attempts = self.attempts.write().await;
-        let state = attempts.entry(key.to_string()).or_insert_with(AttemptState::new);
+        let state = attempts
+            .entry(key.to_string())
+            .or_insert_with(AttemptState::new);
 
         if let Some(until) = state.locked_until {
             if Instant::now() < until {

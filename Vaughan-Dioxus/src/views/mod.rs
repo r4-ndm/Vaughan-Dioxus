@@ -1,7 +1,9 @@
+pub mod dapps;
 pub mod dashboard;
-pub mod send;
-pub mod receive;
 pub mod history;
-pub mod settings;
 pub mod import_export;
-
+pub mod onboarding;
+pub mod receive;
+pub mod send;
+pub mod settings;
+pub mod unlock;

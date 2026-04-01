@@ -33,7 +33,9 @@ mod tests {
 
     #[test]
     fn test_is_valid_address() {
-        assert!(is_valid_address("0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"));
+        assert!(is_valid_address(
+            "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
+        ));
         assert!(!is_valid_address("invalid"));
         assert!(!is_valid_address("0xinvalid"));
     }
@@ -44,4 +46,3 @@ mod tests {
         assert_eq!(truncate_address(addr, 6, 4), "0xd8dA...6045");
     }
 }
-

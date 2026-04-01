@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-ipc-request"
+description = "Allow the webview (including remote dApp frames) to forward JSON-RPC to the Vaughan wallet via ipc_request."
+commands.allow = ["ipc_request"]

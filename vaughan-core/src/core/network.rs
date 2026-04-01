@@ -57,7 +57,8 @@ impl NetworkService {
 
         Self {
             networks: RwLock::new(map),
-            active: RwLock::new(None),
+            // Default so RPC/UI (balance, history, tokens) agree before user opens Settings.
+            active: RwLock::new(Some("ethereum".into())),
         }
     }
 
@@ -116,11 +117,7 @@ impl NetworkService {
             "params": []
         });
 
-        let resp = client
-            .post(&net.rpc_url)
-            .json(&payload)
-            .send()
-            .await;
+        let resp = client.post(&net.rpc_url).json(&payload).send().await;
 
         let latency_ms = started.elapsed().as_millis();
 
@@ -146,6 +143,12 @@ impl NetworkService {
                 error: Some(e.to_string()),
             }),
         }
+    }
+}
+
+impl Default for NetworkService {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -187,7 +190,10 @@ mod tests {
             explorer_url: None,
             explorer_api_url: None,
         };
-        let err = svc.add_custom_network(bad).await.expect_err("empty id must error");
+        let err = svc
+            .add_custom_network(bad)
+            .await
+            .expect_err("empty id must error");
         matches!(err, WalletError::Other(_));
     }
 

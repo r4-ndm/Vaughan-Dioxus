@@ -23,7 +23,8 @@ pub fn copy_text(text: &str) -> Result<(), ClipboardError> {
     #[cfg(not(feature = "desktop"))]
     {
         let _ = text;
-        Err(ClipboardError("clipboard not implemented on this target yet".into()))
+        Err(ClipboardError(
+            "clipboard not implemented on this target yet".into(),
+        ))
     }
 }
-

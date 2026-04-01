@@ -5,12 +5,8 @@ edition.workspace = true
 description = "Shared wallet core: chains, core logic, security, monitoring"
 
 [dependencies]
-# Chain / Ethereum
-alloy = { version = "1.7", default-features = false, features = [
-    "std", "network", "providers", "provider-http", "reqwest",
-    "signers", "signer-local", "rpc-types-eth", "consensus",
-    "contract", "sol-types", "rlp", "dyn-abi", "json", "transports", "rpc-client"
-] }
+# Chain / Ethereum (version from workspace root)
+alloy = { workspace = true }
 async-trait = "0.1"
 url = "2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
@@ -44,3 +40,4 @@ hardware-wallets = []  # Ledger, Trezor
 
 [dev-dependencies]
 proptest = "1"
+tempfile = "3"

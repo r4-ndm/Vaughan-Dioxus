@@ -51,7 +51,9 @@ impl TokenManager {
         let _ = crate::chains::evm::utils::parse_address(contract_address)?;
 
         if symbol.trim().is_empty() || name.trim().is_empty() {
-            return Err(WalletError::Other("Token symbol/name cannot be empty".into()));
+            return Err(WalletError::Other(
+                "Token symbol/name cannot be empty".into(),
+            ));
         }
 
         let addr_key = contract_address.trim().to_ascii_lowercase();
@@ -86,6 +88,12 @@ impl TokenManager {
             .get(&chain_id)
             .map(|m| m.contains_key(&key))
             .unwrap_or(false)
+    }
+}
+
+impl Default for TokenManager {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -132,4 +140,3 @@ mod tests {
         matches!(err, WalletError::Other(_));
     }
 }
-

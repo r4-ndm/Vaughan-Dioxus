@@ -6,4 +6,3 @@ pub mod networks;
 pub mod utils;
 
 pub use adapter::EvmAdapter;
-

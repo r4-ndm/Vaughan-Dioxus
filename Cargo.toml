@@ -2,7 +2,7 @@
 resolver = "2"
 members = [
     "vaughan-core",
-    "vaughan-dioxus",
+    "Vaughan-Dioxus",
     "vaughan-tauri-browser",
     "vaughan-ipc-types",
 ]
@@ -13,6 +13,27 @@ edition = "2021"
 authors = ["Vaughan Team"]
 license = "MIT OR Apache-2.0"
 repository = ""
+
+# Single Alloy version for all crates (Ethereum primitives, RPC, signing).
+[workspace.dependencies]
+alloy = { version = "1.7", default-features = false, features = [
+    "std",
+    "network",
+    "providers",
+    "provider-http",
+    "reqwest",
+    "signers",
+    "signer-local",
+    "rpc-types-eth",
+    "consensus",
+    "contract",
+    "sol-types",
+    "rlp",
+    "dyn-abi",
+    "json",
+    "transports",
+    "rpc-client",
+] }
 
 [profile.release]
 opt-level = "z"

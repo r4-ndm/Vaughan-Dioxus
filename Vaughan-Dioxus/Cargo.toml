@@ -13,10 +13,17 @@ vaughan-core = { path = "../vaughan-core" }
 dioxus = { version = "0.7", features = ["desktop"] }
 dioxus-desktop = { version = "0.7", optional = true }
 dioxus-mobile = { version = "0.7.0-alpha.2", optional = true }
+alloy = { workspace = true }
 tokio = { version = "1", features = ["sync", "rt", "macros", "time"] }
 futures-util = "0.3"
 arboard = "3"
 qrcode = { version = "0.14", optional = true }
+interprocess = { version = "2", features = ["tokio"] }
+serde_json = "1"
+vaughan-ipc-types = { path = "../vaughan-ipc-types" }
+hex = "0.4"
+url = "2"
+tracing = "0.1"
 
 [features]
 default = ["desktop"]

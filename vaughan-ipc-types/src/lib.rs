@@ -61,6 +61,18 @@ pub struct SignTxPayload {
     pub from: String,
     pub to: String,
     pub value: String,
+    #[serde(default)]
+    pub data: Option<String>,
+    #[serde(default)]
+    pub nonce: Option<String>,
+    #[serde(default)]
+    pub gas_limit: Option<String>,
+    #[serde(default)]
+    pub gas_price: Option<String>,
+    #[serde(default)]
+    pub max_fee_per_gas: Option<String>,
+    #[serde(default)]
+    pub max_priority_fee_per_gas: Option<String>,
     pub chain_id: u64,
 }
 
@@ -69,6 +81,12 @@ impl SignTxPayload {
         validate_evm_address(&self.from)?;
         validate_evm_address(&self.to)?;
         validate_decimal_u256ish(&self.value)?;
+        validate_optional_hex_data(self.data.as_deref())?;
+        validate_optional_decimal_u64ish(self.nonce.as_deref())?;
+        validate_optional_decimal_u64ish(self.gas_limit.as_deref())?;
+        validate_optional_decimal_u256ish(self.gas_price.as_deref())?;
+        validate_optional_decimal_u256ish(self.max_fee_per_gas.as_deref())?;
+        validate_optional_decimal_u256ish(self.max_priority_fee_per_gas.as_deref())?;
         validate_chain_id(self.chain_id)?;
         Ok(())
     }
@@ -199,7 +217,11 @@ fn validate_evm_address(addr: &str) -> Result<(), ValidationError> {
     if a.len() != 42 || !a.starts_with("0x") {
         return Err(ValidationError::InvalidAddress);
     }
-    if a.as_bytes()[2..].iter().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f' | b'A'..=b'F')) {
+    if a.as_bytes()[2..]
+        .iter()
+        .copied()
+        .all(|b| b.is_ascii_hexdigit())
+    {
         Ok(())
     } else {
         Err(ValidationError::InvalidAddress)
@@ -211,13 +233,56 @@ fn validate_decimal_u256ish(value: &str) -> Result<(), ValidationError> {
     if v.is_empty() {
         return Err(ValidationError::InvalidValue);
     }
-    if !v.as_bytes().iter().all(|b| matches!(b, b'0'..=b'9')) {
+    if !v.as_bytes().iter().copied().all(|b| b.is_ascii_digit()) {
         return Err(ValidationError::InvalidValue);
     }
     // We accept decimal values that fit within a typical U256 digit budget.
     // (Max U256 is ~78 decimal digits; we use 78 as a pragmatic upper bound.)
     if v.len() > 78 {
         return Err(ValidationError::InvalidValue);
+    }
+    Ok(())
+}
+
+fn validate_optional_decimal_u256ish(value: Option<&str>) -> Result<(), ValidationError> {
+    if let Some(v) = value {
+        validate_decimal_u256ish(v)?;
+    }
+    Ok(())
+}
+
+fn validate_optional_decimal_u64ish(value: Option<&str>) -> Result<(), ValidationError> {
+    if let Some(v) = value {
+        let t = v.trim();
+        if t.is_empty() {
+            return Err(ValidationError::InvalidValue);
+        }
+        if !t.as_bytes().iter().copied().all(|b| b.is_ascii_digit()) {
+            return Err(ValidationError::InvalidValue);
+        }
+        if t.parse::<u64>().is_err() {
+            return Err(ValidationError::InvalidValue);
+        }
+    }
+    Ok(())
+}
+
+fn validate_optional_hex_data(value: Option<&str>) -> Result<(), ValidationError> {
+    if let Some(v) = value {
+        let t = v.trim();
+        if t.is_empty() {
+            return Ok(());
+        }
+        if !t.starts_with("0x") {
+            return Err(ValidationError::InvalidValue);
+        }
+        let bytes = t.as_bytes();
+        if !(bytes.len() - 2).is_multiple_of(2) {
+            return Err(ValidationError::InvalidValue);
+        }
+        if !bytes[2..].iter().copied().all(|b| b.is_ascii_hexdigit()) {
+            return Err(ValidationError::InvalidValue);
+        }
     }
     Ok(())
 }
@@ -234,6 +299,12 @@ mod tests {
                 from: "0x0000000000000000000000000000000000000001".into(),
                 to: "0x0000000000000000000000000000000000000002".into(),
                 value: "1".into(),
+                data: None,
+                nonce: Some("1".into()),
+                gas_limit: Some("21000".into()),
+                gas_price: Some("1000000000".into()),
+                max_fee_per_gas: None,
+                max_priority_fee_per_gas: None,
                 chain_id: 1,
             }),
         };
@@ -260,6 +331,12 @@ mod tests {
             from: "0x123".into(),
             to: "0x0000000000000000000000000000000000000002".into(),
             value: "1".into(),
+            data: None,
+            nonce: None,
+            gas_limit: None,
+            gas_price: None,
+            max_fee_per_gas: None,
+            max_priority_fee_per_gas: None,
             chain_id: 1,
         };
         assert_eq!(p.validate().unwrap_err(), ValidationError::InvalidAddress);
@@ -267,9 +344,18 @@ mod tests {
 
     #[test]
     fn handshake_validation() {
-        let h = Handshake { version: IPC_VERSION, token: "abc".into() };
+        let h = Handshake {
+            version: IPC_VERSION,
+            token: "abc".into(),
+        };
         h.validate().unwrap();
-        let bad = Handshake { version: 999, token: "abc".into() };
-        assert!(matches!(bad.validate(), Err(ValidationError::UnsupportedVersion(999))));
+        let bad = Handshake {
+            version: 999,
+            token: "abc".into(),
+        };
+        assert!(matches!(
+            bad.validate(),
+            Err(ValidationError::UnsupportedVersion(999))
+        ));
     }
 }

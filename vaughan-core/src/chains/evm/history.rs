@@ -5,8 +5,8 @@
 
 use serde::Deserialize;
 
-use crate::chains::{TxRecord, TxStatus};
 use crate::chains::evm::networks::EvmNetworkConfig;
+use crate::chains::{TxRecord, TxStatus};
 use crate::error::WalletError;
 
 #[derive(Debug, Deserialize)]
@@ -48,7 +48,11 @@ fn parse_status(is_error: Option<&str>) -> TxStatus {
     }
 }
 
-pub async fn fetch_txlist(net: &EvmNetworkConfig, address: &str, limit: u32) -> Result<Vec<TxRecord>, WalletError> {
+pub async fn fetch_txlist(
+    net: &EvmNetworkConfig,
+    address: &str,
+    limit: u32,
+) -> Result<Vec<TxRecord>, WalletError> {
     let api = net
         .explorer_api_url
         .as_deref()
@@ -94,7 +98,11 @@ pub async fn fetch_txlist(net: &EvmNetworkConfig, address: &str, limit: u32) -> 
         .collect())
 }
 
-pub async fn fetch_tokentx(net: &EvmNetworkConfig, address: &str, limit: u32) -> Result<Vec<TxRecord>, WalletError> {
+pub async fn fetch_tokentx(
+    net: &EvmNetworkConfig,
+    address: &str,
+    limit: u32,
+) -> Result<Vec<TxRecord>, WalletError> {
     let api = net
         .explorer_api_url
         .as_deref()
@@ -138,4 +146,3 @@ pub async fn fetch_tokentx(net: &EvmNetworkConfig, address: &str, limit: u32) ->
         })
         .collect())
 }
-

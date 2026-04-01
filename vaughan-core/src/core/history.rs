@@ -121,7 +121,10 @@ mod tests {
             Err(WalletError::Other("not used".into()))
         }
 
-        async fn estimate_fee(&self, _tx: &crate::chains::ChainTransaction) -> Result<Fee, WalletError> {
+        async fn estimate_fee(
+            &self,
+            _tx: &crate::chains::ChainTransaction,
+        ) -> Result<Fee, WalletError> {
             Err(WalletError::Other("not used".into()))
         }
 
@@ -142,19 +145,19 @@ mod tests {
             }
             let mut calls = self.tx_calls.write().await;
             *calls += 1;
-                Ok(vec![TxRecord {
-                    hash: "0x1".into(),
-                    from: "0xfrom".into(),
-                    to: "0xto".into(),
-                    value: "1".into(),
-                    status: TxStatus::Confirmed,
-                    block_number: None,
-                    timestamp: Some(0),
-                    gas_used: None,
-                    token_symbol: None,
-                    token_address: None,
-                    is_token_transfer: false,
-                }])
+            Ok(vec![TxRecord {
+                hash: "0x1".into(),
+                from: "0xfrom".into(),
+                to: "0xto".into(),
+                value: "1".into(),
+                status: TxStatus::Confirmed,
+                block_number: None,
+                timestamp: Some(0),
+                gas_used: None,
+                token_symbol: None,
+                token_address: None,
+                is_token_transfer: false,
+            }])
         }
 
         async fn get_token_transfer_history(
@@ -225,8 +228,14 @@ mod tests {
         };
         let svc = HistoryService::new(Duration::from_secs(60));
 
-        let first = svc.get_token_transfers(&adapter, "0xaddr", 10).await.unwrap();
-        let second = svc.get_token_transfers(&adapter, "0xaddr", 10).await.unwrap();
+        let first = svc
+            .get_token_transfers(&adapter, "0xaddr", 10)
+            .await
+            .unwrap();
+        let second = svc
+            .get_token_transfers(&adapter, "0xaddr", 10)
+            .await
+            .unwrap();
         assert_eq!(first.len(), 1);
         assert_eq!(second.len(), 1);
 
@@ -250,4 +259,3 @@ mod tests {
         matches!(err, WalletError::NetworkError(_));
     }
 }
-

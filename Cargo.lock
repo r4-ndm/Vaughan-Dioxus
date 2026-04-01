@@ -8295,6 +8295,7 @@ dependencies = [
  "secrecy",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -8307,14 +8308,21 @@ dependencies = [
 name = "vaughan-dioxus"
 version = "0.1.0"
 dependencies = [
+ "alloy",
  "arboard",
  "dioxus",
  "dioxus-desktop",
  "dioxus-mobile",
  "futures-util",
+ "hex",
+ "interprocess",
  "qrcode",
+ "serde_json",
  "tokio",
+ "tracing",
+ "url",
  "vaughan-core",
+ "vaughan-ipc-types",
 ]
 
 [[package]]

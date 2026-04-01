@@ -1,18 +1,29 @@
 use dioxus::prelude::*;
 
-use std::sync::Arc;
 use futures_util::StreamExt;
+use std::sync::Arc;
+use std::time::Duration;
 
-use vaughan_core::chains::Fee;
 use vaughan_core::chains::evm::utils::parse_address;
-use vaughan_core::core::TransactionService;
+use vaughan_core::chains::Fee;
 use vaughan_core::core::wallet::WalletState;
-use vaughan_core::error::WalletError;
+use vaughan_core::core::TransactionService;
+use vaughan_core::error::{retry_async_transient, WalletError};
+
+use crate::components::SubpageToolbar;
 
 #[derive(Debug, Clone)]
 pub enum SendCmd {
-    Estimate { to: String, value_wei: String, data: Option<String> },
-    Send { to: String, value_wei: String, data: Option<String> },
+    Estimate {
+        to: String,
+        value_wei: String,
+        data: Option<String>,
+    },
+    Send {
+        to: String,
+        value_wei: String,
+        data: Option<String>,
+    },
 }
 
 #[derive(Clone)]
@@ -24,7 +35,7 @@ pub struct SendRuntime {
 }
 
 #[component]
-pub fn SendView(cmd_tx: Coroutine<SendCmd>) -> Element {
+pub fn SendView(cmd_tx: Coroutine<SendCmd>, on_back: Callback<()>) -> Element {
     let mut rt: SendRuntime = use_context();
 
     let mut to = use_signal(|| "".to_string());
@@ -38,61 +49,71 @@ pub fn SendView(cmd_tx: Coroutine<SendCmd>) -> Element {
         .as_ref()
         .map(|f| {
             let max = f.max_fee_per_gas.clone().unwrap_or_else(|| "—".into());
-            let prio = f.max_priority_fee_per_gas.clone().unwrap_or_else(|| "—".into());
-            format!("gas_limit={} max_fee_per_gas={} max_priority_fee_per_gas={}", f.gas_limit, max, prio)
+            let prio = f
+                .max_priority_fee_per_gas
+                .clone()
+                .unwrap_or_else(|| "—".into());
+            format!(
+                "gas_limit={} max_fee_per_gas={} max_priority_fee_per_gas={}",
+                f.gas_limit, max, prio
+            )
         })
         .unwrap_or_else(|| "—".into());
 
     rsx! {
-        div { style: "display: flex; flex-direction: column; gap: 12px;",
-            h2 { "Send" }
+        div { style: "display: flex; flex-direction: column; gap: 16px;",
+            SubpageToolbar { title: "Send", on_back: on_back.clone() }
 
-            div { style: "border: 1px solid var(--border); background: var(--card); padding: 14px;",
-                p { class: "muted", style: "margin: 0; font-size: 12px;", "Recipient (0x...)" }
+            div { class: "card-panel",
+                label { class: "field-label", "Recipient (0x…)" }
                 input {
+                    class: "input-std input-mono",
                     value: "{to.read()}",
                     oninput: move |e| *to.write() = e.value(),
-                    style: "width: 100%; margin-top: 8px; padding: 10px 12px; background: var(--bg); border: 1px solid var(--border); color: var(--fg); font-family: var(--font-mono); font-size: 12px;",
                     placeholder: "0x…"
                 }
             }
 
-            div { style: "border: 1px solid var(--border); background: var(--card); padding: 14px;",
-                p { class: "muted", style: "margin: 0; font-size: 12px;", "Amount (wei, decimal)" }
+            div { class: "card-panel",
+                label { class: "field-label", "Amount (wei)" }
                 input {
+                    class: "input-std input-mono",
                     value: "{value_wei.read()}",
                     oninput: move |e| *value_wei.write() = e.value(),
-                    style: "width: 100%; margin-top: 8px; padding: 10px 12px; background: var(--bg); border: 1px solid var(--border); color: var(--fg); font-family: var(--font-mono); font-size: 12px;",
                     placeholder: "1000000000000000000"
                 }
-                p { class: "muted", style: "margin-top: 8px; font-size: 12px;", "For now this expects wei; we’ll add ETH formatting later." }
+                p { class: "muted", style: "margin: 8px 0 0 0; font-size: 11px;", "ETH formatting UI coming later." }
             }
 
-            div { style: "border: 1px solid var(--border); background: var(--card); padding: 14px;",
-                p { class: "muted", style: "margin: 0; font-size: 12px;", "Data (optional hex)" }
+            div { class: "card-panel",
+                label { class: "field-label", "Data (optional hex)" }
                 input {
+                    class: "input-std input-mono",
                     value: "{data.read()}",
                     oninput: move |e| *data.write() = e.value(),
-                    style: "width: 100%; margin-top: 8px; padding: 10px 12px; background: var(--bg); border: 1px solid var(--border); color: var(--fg); font-family: var(--font-mono); font-size: 12px;",
                     placeholder: "0x"
                 }
             }
 
-            div { style: "border: 1px solid var(--border); background: var(--card); padding: 14px;",
-                p { class: "muted", style: "margin: 0; font-size: 12px;", "Estimated fee (EIP-1559 fields in wei)" }
-                p { style: "margin-top: 8px; font-family: var(--font-mono); font-size: 12px;", "{fee_text}" }
+            div { class: "card-panel",
+                p { class: "section-label", "Estimated fee (wei)" }
+                p { style: "margin: 0; font-family: var(--font-mono); font-size: 12px; color: var(--muted-foreground);",
+                    "{fee_text}"
+                }
             }
 
             if let Some(err) = rt.last_error.read().as_ref() {
-                div { style: "border: 1px solid #442; background: #110; padding: 12px;",
-                    p { style: "margin: 0; color: #f5b;", "{err}" }
+                div { style: "border: 1px solid rgba(239,68,68,0.3); background: var(--error-bg); padding: 12px; border-radius: 8px;",
+                    p { style: "margin: 0; color: var(--error-text); font-size: 13px;", "{err}" }
                 }
             }
 
             if let Some(tx) = rt.last_tx.read().as_ref() {
-                div { style: "border: 1px solid #224; background: #081018; padding: 12px;",
-                    p { class: "muted", style: "margin: 0 0 6px 0; font-size: 12px;", "Last tx hash" }
-                    p { style: "margin: 0; font-family: var(--font-mono); font-size: 12px; word-break: break-all;", "{tx}" }
+                div { class: "card-panel",
+                    p { class: "section-label", "Last tx hash" }
+                    p { style: "margin: 0; font-family: var(--font-mono); font-size: 12px; word-break: break-all;",
+                        "{tx}"
+                    }
                 }
             }
 
@@ -124,16 +145,18 @@ pub fn SendView(cmd_tx: Coroutine<SendCmd>) -> Element {
 
             if *confirm_open.read() {
                 div {
-                    style: "position: fixed; inset: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; padding: 16px;",
+                    class: "modal-overlay",
                     onclick: move |_| *confirm_open.write() = false,
                     div {
-                        style: "width: 100%; max-width: 520px; background: var(--card-2); border: 1px solid var(--border); padding: 16px;",
+                        class: "modal-sheet",
                         onclick: move |evt| evt.stop_propagation(),
-                        h3 { "Confirm send" }
-                        p { class: "muted", style: "font-size: 12px;", "This will fail until we wire a real signer (import/private key). Fee estimation works." }
-                        p { style: "font-family: var(--font-mono); font-size: 12px;", "to={to.read()} value_wei={value_wei.read()}" }
-                        p { style: "font-family: var(--font-mono); font-size: 12px;", "data={data.read()}" }
-                        p { style: "font-family: var(--font-mono); font-size: 12px;", "{fee_text}" }
+                        h3 { style: "margin: 0 0 8px 0;", "Confirm send" }
+                        p { class: "muted", style: "font-size: 12px; margin: 0 0 12px 0;",
+                            "This will fail until a signer is fully wired. Fee estimation works."
+                        }
+                        p { style: "font-family: var(--font-mono); font-size: 11px; margin: 4px 0;", "to={to.read()} value_wei={value_wei.read()}" }
+                        p { style: "font-family: var(--font-mono); font-size: 11px; margin: 4px 0;", "data={data.read()}" }
+                        p { style: "font-family: var(--font-mono); font-size: 11px; margin: 4px 0;", "{fee_text}" }
                         div { class: "btn-row",
                             button { class: "btn", onclick: move |_| *confirm_open.write() = false, "Cancel" }
                             button {
@@ -181,62 +204,103 @@ pub fn use_send_coroutine() -> (SendRuntime, Coroutine<SendCmd>) {
         async move {
             while let Some(cmd) = rx.next().await {
                 rt2.busy.set(true);
-                let result: Result<(), WalletError> = (|| async {
-                    match cmd {
-                    SendCmd::Estimate { to, value_wei, data } => {
-                        parse_address(&to)?; // validate now for clear error
-                        let from = wallet_state
-                            .active_account()
-                            .await
-                            .ok_or_else(|| WalletError::AccountNotFound("No active account".into()))?
-                            .address;
+                let result = match cmd {
+                    SendCmd::Estimate {
+                        to,
+                        value_wei,
+                        data,
+                    } => {
+                        let wallet_state = wallet_state.clone();
+                        let txs = txs.clone();
+                        retry_async_transient(
+                            move || {
+                                let to = to.clone();
+                                let value_wei = value_wei.clone();
+                                let data = data.clone();
+                                let wallet_state = wallet_state.clone();
+                                let txs = txs.clone();
+                                async move {
+                                    parse_address(&to)?;
+                                    let from = wallet_state
+                                        .active_account()
+                                        .await
+                                        .ok_or_else(|| {
+                                            WalletError::AccountNotFound("No active account".into())
+                                        })?
+                                        .address;
 
-                        let chain_id = wallet_state
-                            .active_chain()
-                            .await;
-                        let chain_id_u64 = match chain_id {
-                            vaughan_core::chains::ChainType::Evm => 1, // for now; will be wired from NetworkService
-                            _ => 1,
-                        };
+                                    let chain_id = wallet_state.active_chain().await;
+                                    let chain_id_u64 = match chain_id {
+                                        vaughan_core::chains::ChainType::Evm => 1,
+                                        _ => 1,
+                                    };
 
-                        let built = txs.build_evm_transaction(vaughan_core::core::transaction::TransactionIntent {
-                            from: format!("{:?}", from),
-                            to,
-                            value: value_wei,
-                            data,
-                            chain_id: chain_id_u64,
-                        })?;
+                                    let built = txs.build_evm_transaction(
+                                        vaughan_core::core::transaction::TransactionIntent {
+                                            from: format!("{:?}", from),
+                                            to,
+                                            value: value_wei,
+                                            data,
+                                            chain_id: chain_id_u64,
+                                        },
+                                    )?;
 
-                        let fee = wallet_state.estimate_fee(&built.tx).await?;
-                        rt2.last_fee.set(Some(fee));
-                        Ok(())
+                                    wallet_state.estimate_fee(&built.tx).await
+                                }
+                            },
+                            4,
+                            Duration::from_millis(350),
+                        )
+                        .await
+                        .map(|fee| rt2.last_fee.set(Some(fee)))
                     }
-                    SendCmd::Send { to, value_wei, data } => {
-                        parse_address(&to)?;
-                        let from = wallet_state
-                            .active_account()
-                            .await
-                            .ok_or_else(|| WalletError::AccountNotFound("No active account".into()))?
-                            .address;
+                    SendCmd::Send {
+                        to,
+                        value_wei,
+                        data,
+                    } => {
+                        let wallet_state = wallet_state.clone();
+                        let txs = txs.clone();
+                        retry_async_transient(
+                            move || {
+                                let to = to.clone();
+                                let value_wei = value_wei.clone();
+                                let data = data.clone();
+                                let wallet_state = wallet_state.clone();
+                                let txs = txs.clone();
+                                async move {
+                                    parse_address(&to)?;
+                                    let from = wallet_state
+                                        .active_account()
+                                        .await
+                                        .ok_or_else(|| {
+                                            WalletError::AccountNotFound("No active account".into())
+                                        })?
+                                        .address;
 
-                        let built = txs.build_evm_transaction(vaughan_core::core::transaction::TransactionIntent {
-                            from: format!("{:?}", from),
-                            to,
-                            value: value_wei,
-                            data,
-                            chain_id: 1,
-                        })?;
+                                    let built = txs.build_evm_transaction(
+                                        vaughan_core::core::transaction::TransactionIntent {
+                                            from: format!("{:?}", from),
+                                            to,
+                                            value: value_wei,
+                                            data,
+                                            chain_id: 1,
+                                        },
+                                    )?;
 
-                        // Try to broadcast via adapter (will error until signer is configured).
-                        let hash = wallet_state.send_transaction(built.tx).await?;
-                        rt2.last_tx.set(Some(hash.0));
-                        Ok(())
+                                    wallet_state.send_transaction(built.tx).await
+                                }
+                            },
+                            4,
+                            Duration::from_millis(400),
+                        )
+                        .await
+                        .map(|hash| rt2.last_tx.set(Some(hash.0)))
                     }
-                    }
-                })().await;
+                };
 
                 if let Err(e) = result {
-                    rt2.last_error.set(Some(e.to_string()));
+                    rt2.last_error.set(Some(e.user_message()));
                 }
                 rt2.busy.set(false);
             }
@@ -245,4 +309,3 @@ pub fn use_send_coroutine() -> (SendRuntime, Coroutine<SendCmd>) {
 
     (rt, co)
 }
-

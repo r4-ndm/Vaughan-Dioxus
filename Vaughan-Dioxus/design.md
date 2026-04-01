@@ -6,18 +6,19 @@ This document details the design for building a new Dioxus-based multi-chain cry
 
 ### Design Philosophy
 
-1. **Greenfield Development**: New implementation using both Vaughan-Iced and Vaughan-Tauri as reference blueprints.
-2. **Shared Core**: All chain adapters, security, and business logic are identical to the Iced design — only the presentation layer changes.
-3. **Cross-Platform First**: Dioxus enables a single codebase for desktop (Windows, macOS, Linux) and mobile (Android, iOS).
-4. **Security by Design**: Security-critical functionality isolated in dedicated modules using only audited cryptographic libraries.
-5. **Process Isolation for dApps**: The Tauri dApp browser runs as a separate OS process, ensuring dApp code never touches wallet keys.
-6. **Lightweight**: Aggressive dependency management to minimize binary size and attack surface.
+1. **Vaughan-Tauri as workflow authority**: **[Vaughan-Tauri](https://github.com/r4-ndm/Vaughan-Tauri)** is the primary reference for tested flows, Alloy usage, EIP-1193 behavior, and security patterns. This Dioxus stack should match it unless we document an intentional difference (see repo root [`REFERENCE-Vaughan-Tauri.md`](../REFERENCE-Vaughan-Tauri.md)).
+2. **Greenfield UI**: New Dioxus presentation layer; Vaughan-Iced remains a secondary historical reference where it does not conflict with Vaughan-Tauri.
+3. **Shared Core**: Chain adapters, security, and business logic follow the same boundaries as the reference designs — only the GUI and process layout differ.
+4. **Cross-Platform First**: Dioxus enables a single codebase for desktop (Windows, macOS, Linux) and mobile (Android, iOS).
+5. **Security by Design**: Security-critical functionality isolated in dedicated modules using only audited cryptographic libraries.
+6. **Process Isolation for dApps**: The Tauri dApp browser runs as a separate OS process, ensuring dApp code never touches wallet keys.
+7. **Lightweight**: Aggressive dependency management to minimize binary size and attack surface.
 
 ### Key Design Decisions
 
 - **Dioxus for GUI**: Component-based reactive UI targeting desktop and mobile from a single codebase
 - **Tauri for dApp Browser**: Proven WebView host with OS-level process isolation and native IPC
-- **Shared Core**: `chains/`, `core/`, `security/`, `monitoring/`, `audio/` modules reused verbatim from Iced design
+- **Shared Core**: `vaughan-core` mirrors Vaughan-Tauri’s `src-tauri` chains/core/security split; treat [Vaughan-Tauri](https://github.com/r4-ndm/Vaughan-Tauri) as the behavioral reference, Iced docs as secondary
 - **interprocess for IPC**: Cross-platform IPC abstraction (Unix domain sockets on Linux/macOS, named pipes on Windows)
 - **Shared Theme**: Same visual identity applied to both Dioxus wallet and Tauri browser
 - **Feature Flags**: audio, qr, hardware-wallets, telemetry all optional

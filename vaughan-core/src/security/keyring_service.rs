@@ -26,12 +26,18 @@ impl KeyringService {
     }
 
     /// Store an encrypted secret value under `key_id`.
-    pub fn store_secret(&self, key_id: &str, secret: &str, password: &str) -> Result<(), WalletError> {
+    pub fn store_secret(
+        &self,
+        key_id: &str,
+        secret: &str,
+        password: &str,
+    ) -> Result<(), WalletError> {
         let encrypted = encrypt_data(secret.as_bytes(), password)?;
         let encoded = base64::engine::general_purpose::STANDARD.encode(&encrypted);
 
-        let entry = Entry::new(&self.service_name, key_id)
-            .map_err(|e| WalletError::KeyringError(format!("Keyring entry creation failed: {}", e)))?;
+        let entry = Entry::new(&self.service_name, key_id).map_err(|e| {
+            WalletError::KeyringError(format!("Keyring entry creation failed: {}", e))
+        })?;
 
         entry
             .set_password(&encoded)
@@ -41,9 +47,14 @@ impl KeyringService {
     }
 
     /// Retrieve and decrypt a secret value under `key_id`.
-    pub fn retrieve_secret(&self, key_id: &str, password: &str) -> Result<Secret<String>, WalletError> {
-        let entry = Entry::new(&self.service_name, key_id)
-            .map_err(|e| WalletError::KeyringError(format!("Keyring entry creation failed: {}", e)))?;
+    pub fn retrieve_secret(
+        &self,
+        key_id: &str,
+        password: &str,
+    ) -> Result<Secret<String>, WalletError> {
+        let entry = Entry::new(&self.service_name, key_id).map_err(|e| {
+            WalletError::KeyringError(format!("Keyring entry creation failed: {}", e))
+        })?;
 
         let encoded = entry
             .get_password()
@@ -60,10 +71,19 @@ impl KeyringService {
         Ok(Secret::new(s))
     }
 
+    /// Whether a keyring entry exists (password not required; does not decrypt).
+    pub fn has_secret(&self, key_id: &str) -> bool {
+        match Entry::new(&self.service_name, key_id) {
+            Ok(entry) => entry.get_password().is_ok(),
+            Err(_) => false,
+        }
+    }
+
     /// Delete a stored secret.
     pub fn delete_secret(&self, key_id: &str) -> Result<(), WalletError> {
-        let entry = Entry::new(&self.service_name, key_id)
-            .map_err(|e| WalletError::KeyringError(format!("Keyring entry creation failed: {}", e)))?;
+        let entry = Entry::new(&self.service_name, key_id).map_err(|e| {
+            WalletError::KeyringError(format!("Keyring entry creation failed: {}", e))
+        })?;
 
         entry
             .delete_password()

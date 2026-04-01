@@ -17,6 +17,9 @@ use argon2::{
 };
 use rand::RngCore;
 
+/// User-facing description of [`validate_password`] rules (onboarding, import UI).
+pub const PASSWORD_POLICY_DESCRIPTION: &str = "Password must be at least 12 characters and include uppercase, lowercase, a number, and a symbol (for example ! or @).";
+
 /// Validate password strength before hashing or storage.
 ///
 /// Requirements:
@@ -112,11 +115,15 @@ pub fn encrypt_data(plaintext: &[u8], password: &str) -> Result<Vec<u8>, WalletE
 }
 
 /// Decrypt bytes using AES-256-GCM with password-derived key.
+///
+/// Strength rules are **not** applied here: encryption already enforced policy at write time.
+/// Any candidate password is tried so unlock flows are not blocked by policy checks.
 pub fn decrypt_data(encrypted: &[u8], password: &str) -> Result<Vec<u8>, WalletError> {
-    validate_password(password)?;
     // 16 salt + 12 nonce + 16 tag minimum
     if encrypted.len() < 16 + 12 + 16 {
-        return Err(WalletError::DecryptionFailed("Encrypted data too short".into()));
+        return Err(WalletError::DecryptionFailed(
+            "Encrypted data too short".into(),
+        ));
     }
 
     let salt = &encrypted[0..16];

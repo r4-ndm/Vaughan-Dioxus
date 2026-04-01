@@ -112,6 +112,78 @@
   </div>
 
   <script>
+    // Cross-origin dApp iframes (e.g. app.uniswap.org) do not get __TAURI__ on WebKit/Wry.
+    // Child frames postMessage here; we forward only ipc_request to Tauri and reply back.
+    (function vaughanWalletBridgeFromDappFrame() {
+      function trustedWalletBridgeOrigin(o) {
+        try {
+          var u = new URL(o);
+          if (u.protocol !== "https:") return false;
+          var h = u.hostname.replace(/^www\./, "");
+          return (
+            h === "app.uniswap.org" ||
+            h.endsWith(".uniswap.org") ||
+            h === "uniswap.org" ||
+            h === "uniswap.com" ||
+            h.endsWith(".uniswap.com")
+          );
+        } catch (e) {
+          return false;
+        }
+      }
+      window.addEventListener("message", function (e) {
+        if (!e.data || e.data.type !== "VAUGHAN_IPC") return;
+        if (!trustedWalletBridgeOrigin(e.origin)) return;
+        if (e.data.cmd !== "ipc_request") return;
+        var id = e.data.id;
+        var args = e.data.args;
+        var inv =
+          window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke
+            ? window.__TAURI__.core.invoke
+            : window.__TAURI__ && window.__TAURI__.invoke
+            ? window.__TAURI__.invoke
+            : null;
+        if (!e.source || !e.source.postMessage) return;
+        if (!inv) {
+          e.source.postMessage(
+            {
+              type: "VAUGHAN_IPC_RESPONSE",
+              id: id,
+              error: {
+                message: "Tauri invoke not ready in shell",
+                code: 4900,
+              },
+            },
+            e.origin
+          );
+          return;
+        }
+        inv("ipc_request", args)
+          .then(function (result) {
+            e.source.postMessage(
+              { type: "VAUGHAN_IPC_RESPONSE", id: id, result: result },
+              e.origin
+            );
+          })
+          .catch(function (err) {
+            e.source.postMessage(
+              {
+                type: "VAUGHAN_IPC_RESPONSE",
+                id: id,
+                error: {
+                  message: String(err && err.message ? err.message : err),
+                  code: err && err.code,
+                },
+              },
+              e.origin
+            );
+          });
+      });
+    })();
+
+    // Shell-only: EIP-1193 + EIP-6963 run in every frame via Tauri
+    // `initialization_script_for_all_frames` (see provider_inject.js + lib.rs).
+
     function tauriInvoke(cmd, args) {
       const inv =
         window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke
@@ -119,329 +191,9 @@
           : window.__TAURI__ && window.__TAURI__.invoke
           ? window.__TAURI__.invoke
           : null;
-      if (!inv) return Promise.reject(makeEthRpcError(4900, "Provider disconnected"));
+      if (!inv) return Promise.reject(new Error("Tauri invoke unavailable"));
       return inv(cmd, args);
     }
-
-      // ------------------------------------------------------------
-      // EIP-1193 provider injection (Task 30.7)
-      // ------------------------------------------------------------
-
-      function makeEthRpcError(code, message, data) {
-        const err = new Error(message);
-        err.code = code;
-        if (data !== undefined) err.data = data;
-        return err;
-      }
-
-      function normalizeProviderError(e) {
-        if (e && typeof e.code === "number") return e;
-        return makeEthRpcError(-32603, e?.message || "Internal error");
-      }
-
-      function mapIpcError(payload, fallbackCode, fallbackMsg) {
-        const code = Number(payload?.code);
-        const msg = payload?.message || fallbackMsg;
-
-        // Accept standard EIP-1193 / JSON-RPC codes from backend if already set.
-        if ([4001, 4100, 4200, 4900, -32600, -32601, -32602, -32603].includes(code)) {
-          return makeEthRpcError(code, msg);
-        }
-
-        // Best-effort fallback based on call site.
-        return makeEthRpcError(fallbackCode, msg);
-      }
-
-      function createEmitter() {
-        const listeners = new Map();
-        return {
-          on(event, handler) {
-            const arr = listeners.get(event) ?? [];
-            arr.push(handler);
-            listeners.set(event, arr);
-          },
-          removeListener(event, handler) {
-            const arr = listeners.get(event) ?? [];
-            listeners.set(
-              event,
-              arr.filter((h) => h !== handler)
-            );
-          },
-          emit(event, payload) {
-            const arr = listeners.get(event) ?? [];
-            for (const h of arr) {
-              try {
-                h(payload);
-              } catch (e) {
-                // Best-effort: never crash the dApp due to user handler bugs.
-                console.error(e);
-              }
-            }
-          },
-        };
-      }
-
-      const emitter = createEmitter();
-
-      let currentAccounts = [];
-      let currentChainIdHex = null;
-      let firstConnectEmitted = false;
-
-      function emitDisconnect(err) {
-        currentAccounts = [];
-        currentChainIdHex = null;
-        firstConnectEmitted = false;
-        // EIP-1193 disconnect: payload is a ProviderRpcError-ish object.
-        emitter.emit("disconnect", err ?? { code: 4100, message: "Wallet disconnected" });
-      }
-
-      async function fetchNetworkInfo() {
-        const resp = await tauriInvoke("ipc_request", {
-          request: { type: "GetNetworkInfo" },
-        });
-        if (resp?.type === "NetworkInfo") return resp.payload;
-        throw makeEthRpcError(4100, "Wallet not connected");
-      }
-
-      async function fetchAccounts() {
-        const resp = await tauriInvoke("ipc_request", {
-          request: { type: "GetAccounts" },
-        });
-        if (resp?.type === "Accounts") return resp.payload.map((a) => a.address);
-        throw makeEthRpcError(4100, "Wallet not connected");
-      }
-
-      function toHexChainId(dec) {
-        try {
-          const n = typeof dec === "string" ? BigInt(dec) : BigInt(dec);
-          return "0x" + n.toString(16);
-        } catch {
-          return "0x0";
-        }
-      }
-
-      // Inject provider into the page context.
-      // Note: in this early browser foundation, the webview chrome uses an iframe;
-      // full cross-origin dApp injection will be completed in later Task 30.x steps.
-      window.ethereum = {
-        isMetaMask: true,
-        request: async ({ method, params } = {}) => {
-          const m = (method ?? "").toLowerCase();
-          try {
-            if (m === "eth_requestaccounts" || m === "eth_accounts") {
-              // Ensure chainId is available for connect event payloads.
-              if (!currentChainIdHex) {
-                const net = await fetchNetworkInfo();
-                currentChainIdHex = toHexChainId(net.chain_id);
-              }
-              const accounts = await fetchAccounts();
-              currentAccounts = accounts;
-              emitter.emit("accountsChanged", accounts);
-
-              if (!firstConnectEmitted) {
-                firstConnectEmitted = true;
-                emitter.emit("connect", { chainId: currentChainIdHex, accounts });
-              }
-              return accounts;
-            }
-
-            if (m === "eth_chainid") {
-              const net = await fetchNetworkInfo();
-              currentChainIdHex = toHexChainId(net.chain_id);
-              emitter.emit("chainChanged", currentChainIdHex);
-              return currentChainIdHex;
-            }
-
-            if (m === "eth_sendtransaction") {
-              const tx = params?.[0] ?? {};
-              const value = tx.value ?? "0x0";
-              const from = (tx.from ?? currentAccounts?.[0]) ?? null;
-              const to = tx.to ?? null;
-              const chainId = tx.chainId ?? null;
-
-              if (!to) throw makeEthRpcError(-32602, "Missing transaction 'to'");
-              if (!from) throw makeEthRpcError(-32602, "Missing transaction 'from'");
-
-              // We currently only support simple ETH transfers: no calldata/data encoding yet.
-              const data = tx.data ?? "0x";
-              if (typeof data === "string" && data !== "0x" && data !== "0x0") {
-                throw makeEthRpcError(4200, "Only simple transfers are supported for now");
-              }
-
-              let net = null;
-              if (chainId) {
-                // Accept `0x...` or decimal strings.
-                if (typeof chainId === "string" && chainId.startsWith("0x")) {
-                  net = { chain_id: Number(BigInt(chainId).toString()) };
-                } else {
-                  net = { chain_id: Number(chainId) };
-                }
-              } else {
-                net = await fetchNetworkInfo();
-              }
-
-              const chain_id = net.chain_id;
-
-              // EIP-1193 expects value as hex quantity; our IPC expects decimal string wei.
-              // We'll convert hex quantity -> decimal string when possible.
-              let valueDec;
-              if (typeof value === "string" && value.startsWith("0x")) {
-                valueDec = BigInt(value).toString();
-              } else {
-                // Assume it's already decimal.
-                valueDec = String(value);
-              }
-
-              const resp = await tauriInvoke("ipc_request", {
-                request: {
-                  type: "SignTransaction",
-                  payload: {
-                    from,
-                    to,
-                    value: valueDec,
-                    chain_id,
-                  },
-                },
-              });
-
-              if (resp?.type === "SignedTransaction") return resp.payload;
-              if (resp?.type === "Error") {
-                throw mapIpcError(resp.payload, 4100, "Signing failed");
-              }
-
-              throw makeEthRpcError(-32603, "Unexpected response from wallet");
-            }
-
-            if (m === "personal_sign") {
-              // params: [message, address]
-              const message = params?.[0];
-              const address = params?.[1];
-              if (!address) throw makeEthRpcError(-32602, "Missing address for personal_sign");
-              if (message == null) throw makeEthRpcError(-32602, "Missing message for personal_sign");
-
-              const net = await fetchNetworkInfo();
-              const resp = await tauriInvoke("ipc_request", {
-                request: {
-                  type: "SignMessage",
-                  payload: {
-                    address,
-                    message: String(message),
-                    chain_id: net.chain_id,
-                  },
-                },
-              });
-
-              if (resp?.type === "SignedMessage") return resp.payload;
-              if (resp?.type === "Error") {
-                throw mapIpcError(resp.payload, 4100, "Signing failed");
-              }
-
-              throw makeEthRpcError(-32603, "Unexpected response from wallet");
-            }
-
-            if (m === "eth_signtypeddata_v4".toLowerCase()) {
-              // params: [address, typedData]
-              const address = params?.[0];
-              const typedData = params?.[1];
-              if (!address) throw makeEthRpcError(-32602, "Missing address for eth_signTypedData_v4");
-              if (typedData == null) throw makeEthRpcError(-32602, "Missing typedData for eth_signTypedData_v4");
-
-              const net = await fetchNetworkInfo();
-              const typed_data_json =
-                typeof typedData === "string" ? typedData : JSON.stringify(typedData);
-
-              const resp = await tauriInvoke("ipc_request", {
-                request: {
-                  type: "SignTypedData",
-                  payload: {
-                    address,
-                    typed_data_json,
-                    chain_id: net.chain_id,
-                  },
-                },
-              });
-
-              if (resp?.type === "SignedTypedData") return resp.payload;
-              if (resp?.type === "SignedMessage") return resp.payload; // fallback while wallet implements typed-data
-              if (resp?.type === "Error") {
-                throw mapIpcError(resp.payload, 4100, "Signing failed");
-              }
-
-              throw makeEthRpcError(-32603, "Unexpected response from wallet");
-            }
-
-            if (m === "wallet_switchethereumchain") {
-              const chainId = params?.[0]?.chainId;
-              if (!chainId) {
-                throw makeEthRpcError(-32602, "Missing chainId");
-              }
-
-              // Accept `0x...` or decimal strings.
-              let decChainId;
-              if (typeof chainId === "string" && chainId.startsWith("0x")) {
-                decChainId = BigInt(chainId).toString();
-              } else {
-                decChainId = BigInt(chainId).toString();
-              }
-
-              const resp = await tauriInvoke("ipc_request", {
-                request: { type: "SwitchChain", payload: { chain_id: Number(decChainId) } },
-              });
-              if (resp?.type === "Error") {
-                throw mapIpcError(resp.payload, 4200, "Switch failed");
-              }
-
-              const net = await fetchNetworkInfo();
-              currentChainIdHex = toHexChainId(net.chain_id);
-              emitter.emit("chainChanged", currentChainIdHex);
-
-              return null;
-            }
-
-            throw makeEthRpcError(4200, `Unsupported method: ${method}`);
-          } catch (e) {
-            // On disconnect-like errors, notify listeners.
-            if (e && (e.code === 4100 || e.code === 4900)) {
-              emitDisconnect(e);
-            }
-
-            // Surface EIP-1193 style errors.
-            throw normalizeProviderError(e);
-          }
-        },
-        on: (event, handler) => emitter.on(event, handler),
-        removeListener: (event, handler) => emitter.removeListener(event, handler),
-      };
-
-      // ------------------------------------------------------------
-      // EIP-6963 wallet discovery (Task 30.8)
-      // ------------------------------------------------------------
-      // dApps can listen for `eip6963:announceProvider` and can request discovery
-      // by dispatching `eip6963:requestProvider`.
-
-      const providerInfo = {
-        uuid: `vaughan-${Date.now()}`,
-        name: "Vaughan",
-      };
-
-      function announceProvider() {
-        try {
-          window.dispatchEvent(
-            new CustomEvent("eip6963:announceProvider", {
-              detail: { info: providerInfo, provider: window.ethereum },
-            })
-          );
-        } catch (e) {
-          console.error("Failed to announce EIP-6963 provider", e);
-        }
-      }
-
-      window.addEventListener("eip6963:requestProvider", () => {
-        announceProvider();
-      });
-
-      // Also announce immediately on load.
-      announceProvider();
 
     const backBtn = document.getElementById("backBtn");
     const fwdBtn = document.getElementById("fwdBtn");
@@ -482,6 +234,19 @@
       fwdBtn.disabled = historyIndex >= historyStack.length - 1;
     }
 
+    // Called from Rust when the wallet launches the browser with `--url` (trusted dApp links).
+    window.__VAUGHAN_OPEN_INITIAL_URL = function (url) {
+      try {
+        if (!url || typeof url !== "string") return;
+        let u = url.trim();
+        if (!u) return;
+        if (!/^https?:\/\//i.test(u)) u = "https://" + u;
+        navigate(u, { push: true });
+      } catch (e) {
+        console.error(e);
+      }
+    };
+
     backBtn.addEventListener("click", () => {
       if (historyIndex <= 0) return;
       historyIndex -= 1;
@@ -512,36 +277,36 @@
     async function checkConnection() {
       try {
         setStatus(null, "Connecting...");
-
-        // Prime connection state so the provider can immediately answer calls.
-        const net = await fetchNetworkInfo();
-        currentChainIdHex = toHexChainId(net.chain_id);
-        emitter.emit("chainChanged", currentChainIdHex);
-
-        const accounts = await fetchAccounts();
-        currentAccounts = accounts;
-        emitter.emit("accountsChanged", accounts);
-
-        if (!firstConnectEmitted) {
-          firstConnectEmitted = true;
-          emitter.emit("connect", { chainId: currentChainIdHex, accounts });
+        const netResp = await tauriInvoke("ipc_request", {
+          request: { type: "GetNetworkInfo" },
+        });
+        if (netResp?.type !== "NetworkInfo") {
+          throw new Error("Unexpected network response");
         }
-
+        const net = netResp.payload;
         setStatus(
           "connected",
           `Connected to network: ${net.name} (${net.chain_id})`
         );
       } catch (e) {
-        setStatus("error", `IPC unavailable`);
-        // No wallet connection -> treat as disconnect.
-        emitDisconnect(e);
+        setStatus("error", "IPC unavailable");
       }
     }
 
-    // Start on load.
+    // Start on load. If the wallet launched us with `--url`, the Rust side injects
+    // `window.__VAUGHAN_PENDING_INITIAL_URL` before this script runs — open it here
+    // after IPC check. Do not navigate to about:blank in that case, or we race the
+    // old delayed eval and wipe Uniswap.
     checkConnection().finally(() => {
-      // Default to about:blank; user can paste a URL.
-      navigate("about:blank", { push: false });
+      const pending =
+        typeof window.__VAUGHAN_PENDING_INITIAL_URL === "string"
+          ? window.__VAUGHAN_PENDING_INITIAL_URL.trim()
+          : "";
+      if (pending) {
+        window.__VAUGHAN_OPEN_INITIAL_URL(pending);
+      } else {
+        navigate("about:blank", { push: false });
+      }
     });
   </script>
 </body>

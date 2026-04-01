@@ -140,7 +140,9 @@ pub fn builtin_networks() -> Vec<EvmNetworkConfig> {
 
 /// Find a built-in network by chain id.
 pub fn get_network_by_chain_id(chain_id: u64) -> Option<EvmNetworkConfig> {
-    builtin_networks().into_iter().find(|n| n.chain_id == chain_id)
+    builtin_networks()
+        .into_iter()
+        .find(|n| n.chain_id == chain_id)
 }
 
 /// Find a built-in network by id (case-insensitive).
@@ -150,4 +152,3 @@ pub fn get_network_by_id(id: &str) -> Option<EvmNetworkConfig> {
         .into_iter()
         .find(|n| n.id.to_ascii_lowercase() == needle)
 }
-

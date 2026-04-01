@@ -1,0 +1,67 @@
+use std::sync::{Arc, OnceLock};
+
+use tokio::sync::RwLock;
+use vaughan_core::core::account::AccountManager;
+use vaughan_core::core::persistence::PersistenceHandle;
+use vaughan_core::core::{HistoryService, NetworkService, TokenManager, WalletState};
+use vaughan_core::security::AuthRateLimiter;
+
+#[derive(Clone)]
+pub struct AppServices {
+    pub wallet_state: Arc<WalletState>,
+    pub network_service: Arc<NetworkService>,
+    pub history_service: Arc<HistoryService>,
+    /// Full `state.json` in memory; single source of truth for persisted app state (accounts today; networks/tokens next).
+    #[allow(dead_code)] // exposed for upcoming prefs/network persistence wiring
+    pub persistence: Arc<PersistenceHandle>,
+    pub account_manager: Arc<AccountManager>,
+    pub token_manager: Arc<TokenManager>,
+    /// Limits repeated failed password attempts (import/export unlock and similar).
+    pub password_attempt_limiter: Arc<AuthRateLimiter>,
+    session_password: Arc<RwLock<Option<String>>>,
+}
+
+impl AppServices {
+    fn new() -> Self {
+        let persistence = PersistenceHandle::open().expect("PersistenceHandle init");
+        Self {
+            wallet_state: Arc::new(WalletState::new()),
+            network_service: Arc::new(NetworkService::new()),
+            history_service: Arc::new(HistoryService::new(std::time::Duration::from_secs(10))),
+            persistence: persistence.clone(),
+            account_manager: Arc::new(
+                AccountManager::new("vaughan-wallet", persistence.clone())
+                    .expect("AccountManager init"),
+            ),
+            token_manager: Arc::new(TokenManager::new()),
+            password_attempt_limiter: Arc::new(AuthRateLimiter::new()),
+            session_password: Arc::new(RwLock::new(None)),
+        }
+    }
+
+    pub async fn set_session_password(&self, password: String) {
+        *self.session_password.write().await = Some(password);
+    }
+
+    pub async fn session_password(&self) -> Option<String> {
+        self.session_password.read().await.clone()
+    }
+
+    pub async fn clear_session_password(&self) {
+        *self.session_password.write().await = None;
+    }
+
+    /// Delete all keychain secrets and in-memory wallet state. User must complete onboarding again.
+    pub async fn wipe_wallet(&self) -> Result<(), vaughan_core::error::WalletError> {
+        self.account_manager.wipe_all_wallet_data().await?;
+        self.wallet_state.clear_ephemeral_state().await;
+        self.clear_session_password().await;
+        Ok(())
+    }
+}
+
+static SERVICES: OnceLock<AppServices> = OnceLock::new();
+
+pub fn shared_services() -> AppServices {
+    SERVICES.get_or_init(AppServices::new).clone()
+}

@@ -1,5 +1,11 @@
 # Vaughan Architecture Overview
 
+## Reference implementation
+
+**[Vaughan-Tauri](https://github.com/r4-ndm/Vaughan-Tauri)** (Tauri 2 + React shell, Alloy core) is the **working reference** for workflows, security posture, and Ethereum integration. This Dioxus + split-browser workspace is a rebuild that should stay **behaviorally and architecturally aligned** unless we record an explicit exception.
+
+See **[`REFERENCE-Vaughan-Tauri.md`](REFERENCE-Vaughan-Tauri.md)** for principle parity, folder mapping (`src-tauri` ↔ `vaughan-core` / `Vaughan-Dioxus`), links to upstream specs, and the **local mirror** at **`Vaughan-Old/Vaughan-Tauri-main/Vaughan/`** (read/grep before GitHub when possible).
+
 ## High-Level Design
 
 - **Core library (`vaughan-core`)**: Chain-agnostic wallet logic, security, monitoring, and chain adapters.
@@ -57,12 +63,13 @@ The wallet and dApp browser are separate processes: the Dioxus wallet holds keys
   - `components`: Reusable UI widgets (`AddressDisplay`, `BalanceDisplay`, `TxStatusBadge`, `NetworkSelector`).
 
 - **Views**
+  - `onboarding`: First-launch master wallet (password + recovery phrase) or restore; aligns with Vaughan-Tauri keychain + HD model.
   - `dashboard`: Overview of active account, balance, recent activity; uses `BalanceWatcher`.
   - `send`: Build/estimate/sign/broadcast transactions via `TransactionService` and `ChainAdapter`.
   - `receive`: Show active address, copy-to-clipboard, and optional QR code.
   - `history`: Load and display combined native + token history; poll pending tx status.
   - `settings`: Network management, preferences, and token tracking UI.
-  - `import_export`: Import/export mnemonics and private keys (hooked into `AccountManager` + keyring).
+  - `import_export`: Master phrase export/replace, HD-derived accounts, imported keys (`AccountManager` + keyring); see [`REFERENCE-Vaughan-Tauri.md`](REFERENCE-Vaughan-Tauri.md) for parity with upstream wallet flows.
 
 - **Utils**
   - `utils/clipboard`: Platform-aware clipboard abstraction used by views.

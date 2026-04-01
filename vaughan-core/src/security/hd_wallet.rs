@@ -51,8 +51,9 @@ pub fn mnemonic_to_seed(mnemonic: &str, passphrase: Option<&str>) -> Result<Vec<
 
 /// Derive an EVM account signer from the master seed at `m/44'/60'/0'/0/{index}`.
 pub fn derive_account(seed: &[u8], index: u32) -> Result<PrivateKeySigner, WalletError> {
-    let master_key = XPriv::root_from_seed(seed, None)
-        .map_err(|e| WalletError::KeyDerivationFailed(format!("Master key creation failed: {}", e)))?;
+    let master_key = XPriv::root_from_seed(seed, None).map_err(|e| {
+        WalletError::KeyDerivationFailed(format!("Master key creation failed: {}", e))
+    })?;
 
     let path = format!("m/44'/60'/0'/0/{}", index);
     let derivation_path = DerivationPath::from_str(&path)
@@ -98,6 +99,9 @@ mod tests {
         let signer0 = derive_account(&seed, 0).unwrap();
         let signer1 = derive_account(&seed, 1).unwrap();
         // Deterministic and distinct
-        assert_ne!(format!("{:?}", signer0.address()), format!("{:?}", signer1.address()));
+        assert_ne!(
+            format!("{:?}", signer0.address()),
+            format!("{:?}", signer1.address())
+        );
     }
 }

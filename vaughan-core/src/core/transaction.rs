@@ -9,8 +9,8 @@ use alloy::network::{EthereumWallet, TransactionBuilder};
 use alloy::primitives::{TxKind, U256};
 use alloy::rpc::types::eth::TransactionRequest;
 use alloy::signers::local::PrivateKeySigner;
-use std::str::FromStr;
 use alloy::sol_types::SolCall;
+use std::str::FromStr;
 
 /// User intent to send a transaction (chain-agnostic).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,7 +39,10 @@ impl TransactionService {
     }
 
     /// Build a basic EVM transaction request from an intent.
-    pub fn build_evm_transaction(&self, intent: TransactionIntent) -> Result<BuiltTransaction, WalletError> {
+    pub fn build_evm_transaction(
+        &self,
+        intent: TransactionIntent,
+    ) -> Result<BuiltTransaction, WalletError> {
         let tx = EvmTransaction {
             from: intent.from,
             to: intent.to,
@@ -136,27 +139,32 @@ impl TransactionService {
             .nonce
             .ok_or_else(|| WalletError::InvalidTransaction("Missing nonce".into()))?;
 
-        let mut req = TransactionRequest::default();
-        req.from = Some(from);
-        req.to = Some(TxKind::Call(to));
-        req.value = Some(value);
-        req.gas = Some(gas);
-        req.nonce = Some(nonce);
-        req.chain_id = Some(tx.chain_id);
+        let mut req = TransactionRequest {
+            from: Some(from),
+            to: Some(TxKind::Call(to)),
+            value: Some(value),
+            gas: Some(gas),
+            nonce: Some(nonce),
+            chain_id: Some(tx.chain_id),
+            ..Default::default()
+        };
 
         if let Some(gas_price) = tx.gas_price.as_deref() {
-            let gp = U256::from_str(gas_price)
-                .map_err(|_| WalletError::InvalidAmount(format!("Invalid gas_price: {}", gas_price)))?;
+            let gp = U256::from_str(gas_price).map_err(|_| {
+                WalletError::InvalidAmount(format!("Invalid gas_price: {}", gas_price))
+            })?;
             req.gas_price = Some(gp.to::<u128>());
         }
         if let Some(max_fee) = tx.max_fee_per_gas.as_deref() {
-            let mf = U256::from_str(max_fee)
-                .map_err(|_| WalletError::InvalidAmount(format!("Invalid max_fee_per_gas: {}", max_fee)))?;
+            let mf = U256::from_str(max_fee).map_err(|_| {
+                WalletError::InvalidAmount(format!("Invalid max_fee_per_gas: {}", max_fee))
+            })?;
             req.max_fee_per_gas = Some(mf.to::<u128>());
         }
         if let Some(prio) = tx.max_priority_fee_per_gas.as_deref() {
-            let pf = U256::from_str(prio)
-                .map_err(|_| WalletError::InvalidAmount(format!("Invalid max_priority_fee_per_gas: {}", prio)))?;
+            let pf = U256::from_str(prio).map_err(|_| {
+                WalletError::InvalidAmount(format!("Invalid max_priority_fee_per_gas: {}", prio))
+            })?;
             req.max_priority_fee_per_gas = Some(pf.to::<u128>());
         }
 
@@ -176,7 +184,11 @@ impl TransactionService {
     }
 
     /// Fetch the current account nonce for EVM chains via a chain adapter.
-    pub async fn get_nonce(&self, adapter: &dyn crate::chains::ChainAdapter, from: &str) -> Result<u64, WalletError> {
+    pub async fn get_nonce(
+        &self,
+        adapter: &dyn crate::chains::ChainAdapter,
+        from: &str,
+    ) -> Result<u64, WalletError> {
         adapter.get_nonce(from).await
     }
 
@@ -187,6 +199,12 @@ impl TransactionService {
         tx: ChainTransaction,
     ) -> Result<crate::chains::TxHash, WalletError> {
         adapter.send_transaction(tx).await
+    }
+}
+
+impl Default for TransactionService {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

@@ -4,11 +4,12 @@ use std::sync::Arc;
 
 use futures_util::StreamExt;
 
-use vaughan_core::core::{NetworkConfig, WalletState};
 use vaughan_core::core::network::NetworkHealth;
-use vaughan_core::error::retry_async;
+use vaughan_core::core::{NetworkConfig, WalletState};
+use vaughan_core::error::retry_async_transient;
 
-use crate::app::AppServices;
+use crate::components::SubpageToolbar;
+use crate::services::AppServices;
 
 #[derive(Debug, Clone)]
 pub enum SettingsCmd {
@@ -58,10 +59,19 @@ pub fn provide_settings_runtime() -> SettingsRuntime {
 }
 
 #[component]
-pub fn SettingsView(cmd_tx: Coroutine<SettingsCmd>) -> Element {
+pub fn SettingsView(
+    cmd_tx: Coroutine<SettingsCmd>,
+    on_back: Callback<()>,
+    on_wallet_deleted: Callback<()>,
+) -> Element {
     let mut rt: SettingsRuntime = use_context();
+    let services: AppServices = use_context();
     let wallet_state: Arc<WalletState> = use_context();
     let locked = use_signal(|| true);
+
+    let wipe_confirm_open = use_signal(|| false);
+    let wipe_busy = use_signal(|| false);
+    let wipe_err = use_signal(|| None::<String>);
 
     use_effect(move || {
         let ws = wallet_state.clone();
@@ -77,21 +87,21 @@ pub fn SettingsView(cmd_tx: Coroutine<SettingsCmd>) -> Element {
     });
 
     rsx! {
-        div { style: "display: flex; flex-direction: column; gap: 12px;",
-            h2 { "Settings" }
+        div { style: "display: flex; flex-direction: column; gap: 16px;",
+            SubpageToolbar { title: "Settings", on_back: on_back.clone() }
 
             if *rt.loading.read() {
                 p { class: "muted", "Loading…" }
             }
             if let Some(err) = rt.error.read().as_ref() {
-                div { style: "border: 1px solid #442; background: #110; padding: 12px;",
-                    p { style: "margin: 0; color: #f5b;", "{err}" }
+                div { style: "border: 1px solid rgba(239,68,68,0.3); background: var(--error-bg); padding: 12px; border-radius: 8px;",
+                    p { style: "margin: 0; color: var(--error-text); font-size: 13px;", "{err}" }
                 }
             }
 
             // ---- Networks ----
-            div { style: "border: 1px solid var(--border); background: var(--card); padding: 14px;",
-                h3 { style: "margin: 0 0 8px 0;", "Networks" }
+            div { class: "card-panel rounded-lg",
+                h3 { class: "settings-section-title", "🌐 Networks" }
                 p { class: "muted", style: "margin: 0 0 10px 0; font-size: 12px;",
                     "Built-in networks from core. (Custom add/edit comes later.)"
                 }
@@ -148,8 +158,8 @@ pub fn SettingsView(cmd_tx: Coroutine<SettingsCmd>) -> Element {
             }
 
             // ---- Preferences ----
-            div { style: "border: 1px solid var(--border); background: var(--card); padding: 14px;",
-                h3 { style: "margin: 0 0 8px 0;", "Preferences" }
+            div { class: "card-panel rounded-lg",
+                h3 { class: "settings-section-title", "Preferences" }
                 label { style: "display: flex; align-items: center; gap: 10px; font-size: 12px;",
                     input {
                         r#type: "checkbox",
@@ -161,8 +171,8 @@ pub fn SettingsView(cmd_tx: Coroutine<SettingsCmd>) -> Element {
             }
 
             // ---- Tokens ----
-            div { style: "border: 1px solid var(--border); background: var(--card); padding: 14px;",
-                h3 { style: "margin: 0 0 8px 0;", "Tokens" }
+            div { class: "card-panel rounded-lg",
+                h3 { class: "settings-section-title", "Tokens" }
                 p { class: "muted", style: "margin: 0 0 10px 0; font-size: 12px;",
                     "Tracked ERC-20 tokens for the active chain (in-memory for now)."
                 }
@@ -237,13 +247,93 @@ pub fn SettingsView(cmd_tx: Coroutine<SettingsCmd>) -> Element {
             }
 
             // ---- Security / Wallet ----
-            div { style: "border: 1px solid var(--border); background: var(--card); padding: 14px;",
-                h3 { style: "margin: 0 0 8px 0;", "Security" }
+            div { class: "card-panel rounded-lg",
+                h3 { class: "settings-section-title", "Security" }
                 p { class: "muted", style: "margin: 0 0 10px 0; font-size: 12px;",
                     "Signing/broadcast requires importing a private key or deriving an HD account (not wired in UI yet)."
                 }
                 p { style: "margin: 0; font-family: var(--font-mono); font-size: 12px;",
                     "wallet_locked={locked.read()}"
+                }
+            }
+
+            if let Some(werr) = wipe_err.read().as_ref() {
+                div { style: "border: 1px solid rgba(239,68,68,0.3); background: var(--error-bg); padding: 12px; border-radius: 8px;",
+                    p { style: "margin: 0; color: var(--error-text); font-size: 13px;", "{werr}" }
+                }
+            }
+
+            div { class: "card-panel rounded-lg danger-zone",
+                h3 { class: "settings-section-title", style: "color: var(--error-text);",
+                    "Danger zone"
+                }
+                p { class: "muted", style: "margin: 0 0 12px 0; font-size: 12px;",
+                    "Delete wallet removes the master seed, imported keys, and in-memory accounts from this device. "
+                    "You cannot undo this. Have your recovery phrase backed up before continuing."
+                }
+                if *wipe_confirm_open.read() {
+                    p { style: "margin: 0 0 12px 0; font-size: 13px; color: var(--foreground);",
+                        "Delete all wallet data on this device and return to setup?"
+                    }
+                    div { class: "btn-row",
+                        button {
+                            class: "vaughan-btn",
+                            disabled: *wipe_busy.read(),
+                            onclick: {
+                                let mut wipe_confirm_open = wipe_confirm_open.clone();
+                                let mut wipe_err = wipe_err.clone();
+                                move |_| {
+                                    wipe_confirm_open.set(false);
+                                    wipe_err.set(None);
+                                }
+                            },
+                            "Cancel"
+                        }
+                        button {
+                            class: "btn-danger-outline",
+                            disabled: *wipe_busy.read(),
+                            onclick: {
+                                let services = services.clone();
+                                let on_wallet_deleted = on_wallet_deleted.clone();
+                                let mut wipe_busy = wipe_busy.clone();
+                                let mut wipe_err = wipe_err.clone();
+                                let wipe_confirm_open = wipe_confirm_open.clone();
+                                move |_| {
+                                    wipe_err.set(None);
+                                    wipe_busy.set(true);
+                                    let s = services.clone();
+                                    let od = on_wallet_deleted.clone();
+                                    let mut wipe_busy = wipe_busy.clone();
+                                    let mut wipe_err = wipe_err.clone();
+                                    let mut wipe_confirm_open = wipe_confirm_open.clone();
+                                    spawn(async move {
+                                        match s.wipe_wallet().await {
+                                            Ok(()) => od.call(()),
+                                            Err(e) => {
+                                                wipe_err.set(Some(e.user_message()));
+                                                wipe_busy.set(false);
+                                                wipe_confirm_open.set(false);
+                                            }
+                                        }
+                                    });
+                                }
+                            },
+                            if *wipe_busy.read() { "Deleting…" } else { "Delete wallet" }
+                        }
+                    }
+                } else {
+                    button {
+                        class: "btn-danger-outline",
+                        onclick: {
+                            let mut wipe_confirm_open = wipe_confirm_open.clone();
+                            let mut wipe_err = wipe_err.clone();
+                            move |_| {
+                                wipe_err.set(None);
+                                wipe_confirm_open.set(true);
+                            }
+                        },
+                        "Delete wallet from this device"
+                    }
                 }
             }
         }
@@ -267,7 +357,13 @@ pub fn use_settings_coroutine() -> Coroutine<SettingsCmd> {
 
                         let nets = services.network_service.list_networks().await;
                         rt2.networks.set(nets);
-                        rt2.active_network.set(services.network_service.active_network().await.map(|n| n.id));
+                        rt2.active_network.set(
+                            services
+                                .network_service
+                                .active_network()
+                                .await
+                                .map(|n| n.id),
+                        );
 
                         rt2.loading.set(false);
                     }
@@ -283,7 +379,12 @@ pub fn use_settings_coroutine() -> Coroutine<SettingsCmd> {
                         let toks = services.token_manager.list(chain_id).await;
                         rt2.tokens.set(toks);
                     }
-                    SettingsCmd::AddErc20 { contract, symbol, name, decimals } => {
+                    SettingsCmd::AddErc20 {
+                        contract,
+                        symbol,
+                        name,
+                        decimals,
+                    } => {
                         rt2.error.set(None);
                         let chain_id = services
                             .network_service
@@ -296,7 +397,7 @@ pub fn use_settings_coroutine() -> Coroutine<SettingsCmd> {
                             .add_erc20(chain_id, &contract, &symbol, &name, decimals)
                             .await
                         {
-                            rt2.error.set(Some(e.to_string()));
+                            rt2.error.set(Some(e.user_message()));
                         } else {
                             let toks = services.token_manager.list(chain_id).await;
                             rt2.tokens.set(toks);
@@ -317,7 +418,7 @@ pub fn use_settings_coroutine() -> Coroutine<SettingsCmd> {
                     SettingsCmd::SetActive(id) => {
                         rt2.error.set(None);
                         if let Err(e) = services.network_service.set_active_network(&id).await {
-                            rt2.error.set(Some(e.to_string()));
+                            rt2.error.set(Some(e.user_message()));
                         } else {
                             rt2.active_network.set(Some(id));
                             // Refresh tokens for newly active network.
@@ -333,14 +434,14 @@ pub fn use_settings_coroutine() -> Coroutine<SettingsCmd> {
                     }
                     SettingsCmd::CheckHealth(id) => {
                         rt2.error.set(None);
-                        match retry_async(
+                        match retry_async_transient(
                             || {
                                 let id = id.clone();
                                 let service = services.network_service.clone();
                                 async move { service.check_health(&id).await }
                             },
-                            3,
-                            std::time::Duration::from_millis(200),
+                            4,
+                            std::time::Duration::from_millis(250),
                         )
                         .await
                         {
@@ -356,4 +457,3 @@ pub fn use_settings_coroutine() -> Coroutine<SettingsCmd> {
         }
     })
 }
-

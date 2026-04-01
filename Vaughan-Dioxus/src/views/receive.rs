@@ -2,6 +2,9 @@ use dioxus::prelude::*;
 
 #[cfg(feature = "qr")]
 use vaughan_core::chains::evm::utils::parse_address;
+
+use crate::components::ColoredAddressText;
+use crate::services::AppServices;
 use crate::utils::clipboard::copy_text;
 
 #[derive(Clone)]
@@ -10,28 +13,58 @@ pub struct ReceiveRuntime {
 }
 
 #[component]
-pub fn ReceiveView() -> Element {
-    let mut rt: ReceiveRuntime = use_context();
+pub fn ReceiveView(on_back: Callback<()>) -> Element {
+    let rt: ReceiveRuntime = use_context();
+    let services: AppServices = use_context();
 
-    // Until account selection is fully wired, use the same demo address used in Dashboard.
-    let address = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045".to_string();
-    let address_for_copy = address.clone();
+    let receive_address = use_signal(|| None::<String>);
 
-    let on_copy = move |_| {
-        match copy_text(&address_for_copy) {
-            Ok(_) => rt.last_status.set(Some("Copied to clipboard".into())),
-            Err(e) => rt.last_status.set(Some(format!("Clipboard error: {}", e))),
-        };
+    use_effect(move || {
+        let mgr = services.account_manager.clone();
+        let mut receive_address = receive_address.clone();
+        spawn(async move {
+            let s = match mgr.active_account().await {
+                Some(a) => Some(format!("{:?}", a.address)),
+                None => mgr
+                    .list_accounts()
+                    .await
+                    .first()
+                    .map(|a| format!("{:?}", a.address)),
+            };
+            receive_address.set(s);
+        });
+    });
+
+    let on_row_copy = {
+        let mut rt = rt.clone();
+        let receive_address = receive_address.clone();
+        move |_| {
+            let addr_opt = receive_address.read().clone();
+            let Some(addr) = addr_opt else {
+                rt.last_status.set(Some(
+                    "No wallet address yet. Finish onboarding or add an account.".into(),
+                ));
+                return;
+            };
+            match copy_text(&addr) {
+                Ok(_) => rt.last_status.set(Some("Copied to clipboard".into())),
+                Err(e) => rt.last_status.set(Some(format!("Clipboard error: {}", e))),
+            }
+        }
     };
+
+    let address_for_display = receive_address
+        .read()
+        .clone()
+        .unwrap_or_else(|| "—".to_string());
 
     let qr_section = {
         #[cfg(feature = "qr")]
         {
+            let addr = receive_address.read().clone().unwrap_or_default();
             rsx! {
-                div { style: "border: 1px solid var(--border); background: var(--card); padding: 14px;",
-                    p { class: "muted", style: "margin: 0; font-size: 12px;", "QR Code" }
-                    {render_qr(&address)}
-                    p { class: "muted", style: "margin-top: 10px; font-size: 12px;", "Scan to copy address." }
+                div { class: "qr-white-wrap",
+                    {render_qr(&addr)}
                 }
             }
         }
@@ -42,23 +75,40 @@ pub fn ReceiveView() -> Element {
     };
 
     rsx! {
-        div { style: "display: flex; flex-direction: column; gap: 12px;",
-            h2 { "Receive" }
-
-            div { style: "border: 1px solid var(--border); background: var(--card); padding: 14px;",
-                p { class: "muted", style: "margin: 0; font-size: 12px;", "Your address" }
-                p { style: "margin-top: 8px; margin-bottom: 0; font-family: var(--font-mono); font-size: 12px; word-break: break-all;",
-                    "{address}"
-                }
-                div { class: "btn-row",
-                    button { class: "btn", onclick: on_copy, "Copy" }
-                }
-                if let Some(msg) = rt.last_status.read().as_ref() {
-                    p { class: "muted", style: "margin-top: 10px; font-size: 12px;", "{msg}" }
-                }
+        div { class: "receive-stack",
+            button {
+                class: "back-link",
+                onclick: move |_| on_back.call(()),
+                "← Back to Dashboard"
             }
 
-            {qr_section}
+            h1 { class: "receive-title", "Receive Assets" }
+
+            if receive_address.read().is_some() {
+                div { class: "receive-card",
+                    {qr_section}
+
+                    div { class: "address-copy-row",
+                        p { class: "field-label", style: "text-align: center;", "Your address" }
+                        div {
+                            class: "address-copy-box",
+                            onclick: on_row_copy,
+                            ColoredAddressText { address: address_for_display.clone() }
+                            span { class: "muted", style: "flex-shrink: 0; font-size: 12px;", "Copy" }
+                        }
+                    }
+
+                    div { class: "warn-banner",
+                        "Only send native tokens (ETH, PLS, etc.) and ERC-20 tokens to this address."
+                    }
+
+                    if let Some(msg) = rt.last_status.read().as_ref() {
+                        p { class: "muted", style: "margin: 0; font-size: 12px;", "{msg}" }
+                    }
+                }
+            } else {
+                p { class: "muted", "Loading address…" }
+            }
         }
     }
 }
@@ -74,24 +124,23 @@ fn render_qr(text: &str) -> Element {
     use qrcode::render::svg;
     use qrcode::QrCode;
 
-    // Validate to keep QR content sane; still render even if checksum-casing differs.
     let _ = parse_address(text);
 
     let code = QrCode::new(text.as_bytes()).ok();
     let svg_str = match code {
         Some(c) => c
             .render::<svg::Color>()
-            .min_dimensions(180, 180)
+            .min_dimensions(200, 200)
             .quiet_zone(true)
             .build(),
-        None => "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"180\" height=\"180\"></svg>".into(),
+        None => {
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"200\" height=\"200\"></svg>".into()
+        }
     };
 
     rsx! {
         div {
-            style: "margin-top: 10px; background: #fff; padding: 10px; display: inline-block;",
             dangerous_inner_html: "{svg_str}"
         }
     }
 }
-

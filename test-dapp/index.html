@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Vaughan EIP-1193 / EIP-6963 test dApp</title>
+  <style>
+    :root { font-family: system-ui, sans-serif; background: #0f0f12; color: #eee; }
+    body { max-width: 42rem; margin: 2rem auto; padding: 0 1rem; }
+    h1 { font-size: 1.25rem; }
+    .muted { color: #888; font-size: 0.85rem; }
+    button {
+      margin: 0.35rem 0.35rem 0.35rem 0;
+      padding: 0.45rem 0.75rem;
+      background: #2a2a32;
+      color: #eee;
+      border: 1px solid #444;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    button:hover { background: #363640; }
+    pre {
+      background: #1a1a20;
+      border: 1px solid #333;
+      padding: 1rem;
+      border-radius: 8px;
+      overflow: auto;
+      font-size: 12px;
+      max-height: 50vh;
+    }
+  </style>
+</head>
+<body>
+  <h1>Vaughan provider test</h1>
+  <p class="muted">
+    Open this page inside <strong>vaughan-tauri-browser</strong> (paste URL in the address bar), or serve this folder
+    locally (<code>python -m http.server 8765</code>) and load <code>http://127.0.0.1:8765</code>.
+    Requires <code>window.ethereum</code> injection (Vaughan / MetaMask).
+  </p>
+  <div>
+    <button type="button" id="btnChain">eth_chainId</button>
+    <button type="button" id="btnAccounts">eth_accounts</button>
+    <button type="button" id="btnReq">eth_requestAccounts</button>
+    <button type="button" id="btnRevoke">wallet_revokePermissions</button>
+    <button type="button" id="btnClear">Clear log</button>
+  </div>
+  <p class="muted" id="provHint"></p>
+  <pre id="log"></pre>
+  <script>
+    const logEl = document.getElementById("log");
+    const hint = document.getElementById("provHint");
+    function log(line) {
+      logEl.textContent += line + "\n";
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+    function clearLog() {
+      logEl.textContent = "";
+    }
+
+    window.addEventListener("eip6963:announceProvider", function (ev) {
+      var d = ev.detail;
+      log("[EIP-6963] announce: " + (d && d.info ? d.info.name + " (" + d.info.rdns + ")" : "?"));
+    });
+
+    async function safeReq(method, params) {
+      var eth = window.ethereum;
+      if (!eth) {
+        log("No window.ethereum");
+        return;
+      }
+      try {
+        var out = await eth.request({ method: method, params: params || [] });
+        log(method + " => " + JSON.stringify(out));
+      } catch (e) {
+        log(method + " ERROR " + (e && e.message) + " code=" + (e && e.code));
+      }
+    }
+
+    document.getElementById("btnClear").onclick = clearLog;
+    document.getElementById("btnChain").onclick = function () {
+      safeReq("eth_chainId");
+    };
+    document.getElementById("btnAccounts").onclick = function () {
+      safeReq("eth_accounts");
+    };
+    document.getElementById("btnReq").onclick = function () {
+      safeReq("eth_requestAccounts");
+    };
+    document.getElementById("btnRevoke").onclick = function () {
+      safeReq("wallet_revokePermissions", [{ eth_accounts: {} }]);
+    };
+
+    if (window.ethereum) {
+      hint.textContent =
+        "ethereum present; isMetaMask=" +
+        !!window.ethereum.isMetaMask +
+        " isVaughan=" +
+        !!window.ethereum.isVaughan;
+      window.dispatchEvent(new Event("eip6963:requestProvider"));
+    } else {
+      hint.textContent = "No window.ethereum — open in Vaughan dApp browser or install a wallet.";
+    }
+  </script>
+</body>
+</html>

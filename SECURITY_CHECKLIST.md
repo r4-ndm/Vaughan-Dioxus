@@ -2,6 +2,10 @@
 
 This checklist tracks the current security hardening implemented in the repo.
 
+## Internal audits
+
+- [x] **2026-03-29** — Full internal audit documented in [`AUDIT_INTERNAL.md`](AUDIT_INTERNAL.md) (architecture, deps, Clippy, duplication, CI). Dependency `cargo audit` and release-size measurement should still be run on CI or a developer machine with sufficient disk.
+
 ## Implemented
 
 - [x] Password validation requires minimum length and mixed character classes.
@@ -17,8 +21,9 @@ This checklist tracks the current security hardening implemented in the repo.
 ## Remaining Review Items
 
 - [ ] Confirm external security contact details.
-- [ ] Run `cargo audit` before release.
+- [ ] Run `cargo audit` before each release (also wired in `.github/workflows/ci.yml` when `cargo-audit` installs successfully).
 - [ ] Perform an end-to-end manual wallet recovery review.
-- [ ] Review dApp permission prompts and origin checks.
+- [ ] Review dApp permission prompts and origin checks (see audit: trusted host list + IPC threat model).
 - [ ] Verify release signing and distribution process.
+- [ ] Optional external security audit before major releases.
 

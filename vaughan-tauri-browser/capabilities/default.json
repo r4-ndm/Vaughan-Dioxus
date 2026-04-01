@@ -1,0 +1,19 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Shell UI, dApp iframes, and allow-listed HTTPS origins may invoke the wallet IPC bridge.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "allow-ipc-request"
+  ],
+  "remote": {
+    "urls": [
+      "https://app.uniswap.org/*",
+      "https://*.uniswap.org/*",
+      "https://uniswap.org/*",
+      "https://*.uniswap.com/*",
+      "https://uniswap.com/*"
+    ]
+  }
+}

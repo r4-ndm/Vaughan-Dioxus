@@ -10,4 +10,3 @@ sol! {
         function transfer(address to, uint256 amount) external returns (bool);
     }
 }
-

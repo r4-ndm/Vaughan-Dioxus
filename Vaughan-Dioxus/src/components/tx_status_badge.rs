@@ -17,4 +17,3 @@ pub fn TxStatusBadge(status: TxStatus) -> Element {
         }
     }
 }
-

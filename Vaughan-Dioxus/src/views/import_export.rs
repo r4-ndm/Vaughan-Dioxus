@@ -2,22 +2,42 @@ use dioxus::prelude::*;
 
 use futures_util::StreamExt;
 
+use crate::components::SubpageToolbar;
+use crate::services::AppServices;
 use vaughan_core::chains::evm::utils::parse_address;
 use vaughan_core::core::account::AccountManager;
 use vaughan_core::error::WalletError;
-use vaughan_core::security::generate_mnemonic;
+use vaughan_core::security::{validate_password, PASSWORD_POLICY_DESCRIPTION};
 
-use crate::app::AppServices;
+/// Rate-limit key for import/export password attempts (shared across all actions in this view).
+const IMPORT_EXPORT_PW_KEY: &str = "import_export_password";
 use crate::utils::clipboard::copy_text;
 
 #[derive(Debug, Clone)]
 pub enum ImportExportCmd {
-    GenerateMnemonic { password: String, words: usize },
-    ImportMnemonic { password: String, mnemonic: String },
-    ExportMnemonic { password: String },
+    /// Replace master seed from recovery phrase (destructive). Prefer onboarding for first setup.
+    ImportMnemonic {
+        password: String,
+        mnemonic: String,
+    },
+    ExportMnemonic {
+        password: String,
+    },
+    /// Next HD index from stored master seed (wallet password only).
+    AddHdAccount {
+        password: String,
+        name: String,
+    },
 
-    ImportPrivateKey { password: String, name: String, private_key: String },
-    ExportPrivateKey { password: String, address: String },
+    ImportPrivateKey {
+        password: String,
+        name: String,
+        private_key: String,
+    },
+    ExportPrivateKey {
+        password: String,
+        address: String,
+    },
 }
 
 #[derive(Clone)]
@@ -36,12 +56,13 @@ pub fn provide_import_export_runtime() -> ImportExportRuntime {
 }
 
 #[component]
-pub fn ImportExportView(cmd_tx: Coroutine<ImportExportCmd>) -> Element {
+pub fn ImportExportView(cmd_tx: Coroutine<ImportExportCmd>, on_back: Callback<()>) -> Element {
     let mut rt: ImportExportRuntime = use_context();
 
     let mut password = use_signal(|| "".to_string());
 
     let mut mnemonic_in = use_signal(|| "".to_string());
+    let mut hd_account_name = use_signal(|| "Account".to_string());
     let mut pk_name = use_signal(|| "Imported Account".to_string());
     let mut pk_in = use_signal(|| "".to_string());
     let mut export_addr = use_signal(|| "".to_string());
@@ -54,14 +75,15 @@ pub fn ImportExportView(cmd_tx: Coroutine<ImportExportCmd>) -> Element {
     };
 
     rsx! {
-        div { style: "display: flex; flex-direction: column; gap: 12px;",
-            h2 { "Import / Export" }
+        div { style: "display: flex; flex-direction: column; gap: 16px;",
+            SubpageToolbar { title: "Accounts & keys", on_back: on_back.clone() }
             p { class: "muted", style: "font-size: 12px;",
-                "Security warning: Exporting secrets shows them on screen. Do this offline and never share them."
+                "The master wallet holds the only recovery phrase. Extra accounts are HD-derived with your wallet password. Exporting secrets shows them on screen — do that offline."
             }
 
             div { style: "border: 1px solid var(--border); background: var(--card); padding: 14px;",
                 p { class: "muted", style: "margin: 0; font-size: 12px;", "Password (required for keychain encryption/decryption)" }
+                p { class: "muted", style: "margin: 8px 0 0 0; font-size: 11px;", {PASSWORD_POLICY_DESCRIPTION} }
                 input {
                     r#type: "password",
                     value: "{password.read()}",
@@ -77,24 +99,13 @@ pub fn ImportExportView(cmd_tx: Coroutine<ImportExportCmd>) -> Element {
                 }
             }
 
-            // ----- Mnemonic -----
+            // ----- Master recovery phrase -----
             div { style: "border: 1px solid var(--border); background: var(--card); padding: 14px;",
-                h3 { style: "margin: 0 0 8px 0;", "Mnemonic (seed phrase)" }
+                h3 { style: "margin: 0 0 8px 0;", "Master recovery phrase" }
+                p { class: "muted", style: "margin: 0 0 10px 0; font-size: 12px;",
+                    "Only the master wallet has a seed phrase. Export shows it after you enter your password. Importing a phrase replaces the current master wallet and clears account metadata on this device."
+                }
                 div { class: "btn-row",
-                    button {
-                        class: "btn",
-                        disabled: *rt.busy.read(),
-                        onclick: move |_| {
-                            rt.error.set(None);
-                            rt.revealed_secret.set(None);
-                            cmd_tx.send(ImportExportCmd::GenerateMnemonic {
-                                password: password.read().clone(),
-                                words: 12,
-                            });
-                            open_modal();
-                        },
-                        "Generate new (12 words)"
-                    }
                     button {
                         class: "btn",
                         disabled: *rt.busy.read(),
@@ -104,16 +115,16 @@ pub fn ImportExportView(cmd_tx: Coroutine<ImportExportCmd>) -> Element {
                             cmd_tx.send(ImportExportCmd::ExportMnemonic { password: password.read().clone() });
                             open_modal();
                         },
-                        "Export existing"
+                        "Export master phrase"
                     }
                 }
 
-                p { class: "muted", style: "margin: 10px 0 6px 0; font-size: 12px;", "Import mnemonic" }
+                p { class: "muted", style: "margin: 10px 0 6px 0; font-size: 12px;", "Replace master from phrase (destructive)" }
                 textarea {
                     value: "{mnemonic_in.read()}",
                     oninput: move |e| *mnemonic_in.write() = e.value(),
                     style: "width: 100%; min-height: 90px; padding: 10px 12px; background: var(--bg); border: 1px solid var(--border); color: var(--fg); font-family: var(--font-mono); font-size: 12px;",
-                    placeholder: "twelve words …"
+                    placeholder: "twelve or twenty-four words …"
                 }
                 div { class: "btn-row",
                     button {
@@ -126,7 +137,35 @@ pub fn ImportExportView(cmd_tx: Coroutine<ImportExportCmd>) -> Element {
                                 mnemonic: mnemonic_in.read().trim().to_string(),
                             });
                         },
-                        "Import mnemonic"
+                        "Replace master from phrase"
+                    }
+                }
+            }
+
+            // ----- HD derived account (no new seed) -----
+            div { style: "border: 1px solid var(--border); background: var(--card); padding: 14px;",
+                h3 { style: "margin: 0 0 8px 0;", "Add HD account" }
+                p { class: "muted", style: "margin: 0 0 10px 0; font-size: 12px;",
+                    "Derives the next address from your stored master seed. Requires your wallet password above — no recovery phrase."
+                }
+                input {
+                    value: "{hd_account_name.read()}",
+                    oninput: move |e| *hd_account_name.write() = e.value(),
+                    style: "width: 100%; margin-top: 8px; padding: 10px 12px; background: var(--bg); border: 1px solid var(--border); color: var(--fg); font-size: 12px;",
+                    placeholder: "Account name"
+                }
+                div { class: "btn-row",
+                    button {
+                        class: "btn",
+                        disabled: *rt.busy.read(),
+                        onclick: move |_| {
+                            rt.error.set(None);
+                            cmd_tx.send(ImportExportCmd::AddHdAccount {
+                                password: password.read().clone(),
+                                name: hd_account_name.read().trim().to_string(),
+                            });
+                        },
+                        "Add HD account"
                     }
                 }
             }
@@ -249,42 +288,122 @@ pub fn use_import_export_coroutine() -> Coroutine<ImportExportCmd> {
                 rt2.busy.set(true);
                 rt2.error.set(None);
 
+                let password_for_policy_check: Option<&str> = match &cmd {
+                    ImportExportCmd::ImportMnemonic { password, .. }
+                    | ImportExportCmd::ImportPrivateKey { password, .. } => Some(password.as_str()),
+                    _ => None,
+                };
+                if let Some(pw) = password_for_policy_check {
+                    if validate_password(pw.trim()).is_err() {
+                        rt2.error.set(Some(PASSWORD_POLICY_DESCRIPTION.to_string()));
+                        rt2.busy.set(false);
+                        continue;
+                    }
+                }
+
+                if services
+                    .password_attempt_limiter
+                    .is_locked(IMPORT_EXPORT_PW_KEY)
+                    .await
+                {
+                    let mins = services
+                        .password_attempt_limiter
+                        .lockout_duration()
+                        .as_secs()
+                        / 60;
+                    rt2.error.set(Some(format!(
+                        "Too many failed password attempts. Try again in about {mins} minutes."
+                    )));
+                    rt2.busy.set(false);
+                    continue;
+                }
+
                 let result: Result<(), WalletError> = (|| async {
                     match cmd {
-                        ImportExportCmd::GenerateMnemonic { password, words } => {
-                            let phrase = generate_mnemonic(words)?;
-                            mgr.store_wallet_mnemonic(&password, &phrase)?;
-                            rt2.revealed_secret.set(Some(phrase));
+                        ImportExportCmd::ImportMnemonic { password, mnemonic } => {
+                            if !password.trim().is_empty() {
+                                services.set_session_password(password.clone()).await;
+                            }
+                            mgr.replace_master_from_mnemonic(&password, &mnemonic)
+                                .await?;
                             Ok(())
                         }
-                        ImportExportCmd::ImportMnemonic { password, mnemonic } => {
-                            mgr.store_wallet_mnemonic(&password, &mnemonic)?;
+                        ImportExportCmd::AddHdAccount { password, name } => {
+                            if !password.trim().is_empty() {
+                                services.set_session_password(password.clone()).await;
+                            }
+                            let n = if name.trim().is_empty() {
+                                "HD account".into()
+                            } else {
+                                name
+                            };
+                            mgr.add_hd_derived_account(&password, n).await?;
                             Ok(())
                         }
                         ImportExportCmd::ExportMnemonic { password } => {
+                            if !password.trim().is_empty() {
+                                services.set_session_password(password.clone()).await;
+                            }
                             let phrase = mgr.export_wallet_mnemonic(&password)?;
                             rt2.revealed_secret.set(Some(phrase));
                             Ok(())
                         }
-                        ImportExportCmd::ImportPrivateKey { password, name, private_key } => {
-                            let _acct = mgr.import_private_key_account(&password, &private_key, name).await?;
+                        ImportExportCmd::ImportPrivateKey {
+                            password,
+                            name,
+                            private_key,
+                        } => {
+                            if !password.trim().is_empty() {
+                                services.set_session_password(password.clone()).await;
+                            }
+                            let _acct = mgr
+                                .import_private_key_account(&password, &private_key, name)
+                                .await?;
                             Ok(())
                         }
                         ImportExportCmd::ExportPrivateKey { password, address } => {
+                            if !password.trim().is_empty() {
+                                services.set_session_password(password.clone()).await;
+                            }
                             let addr = parse_address(&address)?;
                             let pk = mgr.export_private_key(&password, addr)?;
                             rt2.revealed_secret.set(Some(format!("0x{pk}")));
                             Ok(())
                         }
                     }
-                })().await;
+                })()
+                .await;
 
                 if let Err(e) = result {
-                    rt2.error.set(Some(e.to_string()));
+                    if matches!(e, WalletError::InvalidPassword) {
+                        match services
+                            .password_attempt_limiter
+                            .register_failure(IMPORT_EXPORT_PW_KEY)
+                            .await
+                        {
+                            Ok(()) => rt2.error.set(Some(e.user_message())),
+                            Err(_) => {
+                                let mins = services
+                                    .password_attempt_limiter
+                                    .lockout_duration()
+                                    .as_secs()
+                                    / 60;
+                                rt2.error.set(Some(format!(
+                                    "Too many failed password attempts. Try again in about {mins} minutes."
+                                )));
+                            }
+                        }
+                    } else {
+                        rt2.error.set(Some(e.user_message()));
+                    }
+                } else {
+                    services
+                        .password_attempt_limiter
+                        .register_success(IMPORT_EXPORT_PW_KEY)
+                        .await;
                 }
                 rt2.busy.set(false);
             }
         }
     })
 }
-

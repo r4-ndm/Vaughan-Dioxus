@@ -1,1 +1,1 @@
-{}
+{"default":{"identifier":"default","description":"Shell UI, dApp iframes, and allow-listed HTTPS origins may invoke the wallet IPC bridge.","remote":{"urls":["https://app.uniswap.org/*","https://*.uniswap.org/*","https://uniswap.org/*","https://*.uniswap.com/*","https://uniswap.com/*"]},"local":true,"windows":["main"],"permissions":["core:default","allow-ipc-request"]}}
