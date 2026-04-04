@@ -1,6 +1,6 @@
 //! Integration tests under `tests/` for tooling that keys off this layout.
 
-use vaughan_ipc_types::{Handshake, IPC_VERSION, IpcEnvelope, IpcRequest};
+use vaughan_ipc_types::{Handshake, IpcEnvelope, IpcRequest, IPC_VERSION};
 
 #[test]
 fn handshake_and_envelope_serde_smoke() {

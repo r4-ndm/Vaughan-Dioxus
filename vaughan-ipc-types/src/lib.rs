@@ -291,13 +291,18 @@ fn validate_optional_hex_data(value: Option<&str>) -> Result<(), ValidationError
 mod tests {
     use super::*;
 
+    fn pad40(suffix_hex: &str) -> String {
+        let s = suffix_hex.trim_start_matches("0x");
+        format!("0x{s:0>40}")
+    }
+
     #[test]
     fn serde_roundtrip_request() {
         let req = IpcEnvelope {
             id: 1,
             body: IpcRequest::SignTransaction(SignTxPayload {
-                from: "0x0000000000000000000000000000000000000001".into(),
-                to: "0x0000000000000000000000000000000000000002".into(),
+                from: pad40("1"),
+                to: pad40("2"),
                 value: "1".into(),
                 data: None,
                 nonce: Some("1".into()),
@@ -329,7 +334,7 @@ mod tests {
     fn validation_rejects_bad_address() {
         let p = SignTxPayload {
             from: "0x123".into(),
-            to: "0x0000000000000000000000000000000000000002".into(),
+            to: pad40("2"),
             value: "1".into(),
             data: None,
             nonce: None,

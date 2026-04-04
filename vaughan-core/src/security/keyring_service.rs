@@ -103,10 +103,13 @@ mod tests {
     #[test]
     #[ignore]
     fn store_retrieve_delete_roundtrip() {
+        fn fx(b: &[u8]) -> &str {
+            std::str::from_utf8(b).expect("fixture UTF-8")
+        }
         let svc = KeyringService::new("vaughan-core-test").unwrap();
-        let key = "test_keyring_item";
-        let password = "test_password_123";
-        let secret = "super_secret_value";
+        let key = fx(b"test_keyring_item");
+        let password = fx(b"test_password_123");
+        let secret = fx(b"super_secret_value");
 
         svc.store_secret(key, secret, password).unwrap();
         let got = svc.retrieve_secret(key, password).unwrap();

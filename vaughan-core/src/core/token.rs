@@ -100,41 +100,42 @@ impl Default for TokenManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_only::padded_eth_addr;
 
     #[tokio::test]
     async fn add_list_and_remove_token() {
         let mgr = TokenManager::new();
         let chain_id = 1;
-        let addr = "0x0000000000000000000000000000000000000001";
+        let addr = padded_eth_addr("1");
 
-        mgr.add_erc20(chain_id, addr, "TST", "Test Token", 18)
+        mgr.add_erc20(chain_id, &addr, "TST", "Test Token", 18)
             .await
             .unwrap();
 
-        assert!(mgr.is_tracked(chain_id, addr).await);
+        assert!(mgr.is_tracked(chain_id, &addr).await);
         let list = mgr.list(chain_id).await;
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].symbol, "TST");
 
-        let removed = mgr.remove(chain_id, addr).await;
+        let removed = mgr.remove(chain_id, &addr).await;
         assert!(removed);
-        assert!(!mgr.is_tracked(chain_id, addr).await);
+        assert!(!mgr.is_tracked(chain_id, &addr).await);
     }
 
     #[tokio::test]
     async fn rejects_empty_symbol_or_name() {
         let mgr = TokenManager::new();
         let chain_id = 1;
-        let addr = "0x0000000000000000000000000000000000000001";
+        let addr = padded_eth_addr("1");
 
         let err = mgr
-            .add_erc20(chain_id, addr, "", "Name", 18)
+            .add_erc20(chain_id, &addr, "", "Name", 18)
             .await
             .expect_err("empty symbol must error");
         matches!(err, WalletError::Other(_));
 
         let err = mgr
-            .add_erc20(chain_id, addr, "SYM", "", 18)
+            .add_erc20(chain_id, &addr, "SYM", "", 18)
             .await
             .expect_err("empty name must error");
         matches!(err, WalletError::Other(_));

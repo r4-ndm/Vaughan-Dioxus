@@ -50,6 +50,8 @@ GitHub Actions runs `cargo fmt`, `clippy -D warnings`, tests, and `cargo audit` 
 
 Some tools flag test-only strings (for example literals inside `#[cfg(test)]` modules) as “secrets.” Those fixtures are **not** production credentials. Run the real suite with `cargo test --workspace`.
 
+**Gitleaks:** [`.gitleaks.toml`](.gitleaks.toml) extends the default rules and allowlists paths that intentionally contain public chain addresses, IPC test vectors, or curated dApp URLs. Run `gitleaks detect --source .` locally before pushing if you use it.
+
 ## License
 
 Dual-licensed under **MIT OR Apache-2.0**, at your option, consistent with workspace `Cargo.toml`. The MIT text is in [LICENSE](LICENSE) and [LICENSE-MIT](LICENSE-MIT). For Apache-2.0, use the [standard license text](https://www.apache.org/licenses/LICENSE-2.0.txt).

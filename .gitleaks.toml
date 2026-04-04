@@ -1,0 +1,19 @@
+# Local overrides on top of Gitleaks default rules.
+# Run: gitleaks detect --source . --verbose
+# https://github.com/gitleaks/gitleaks
+
+title = "Vaughan-Dioxus"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Rust test-only helpers, integration tests, and curated public chain / dApp constants"
+paths = [
+  '''(?i)^vaughan-core/src/test_only\.rs$''',
+  '''(?i)^vaughan-core/tests/.*\.rs$''',
+  '''(?i)^vaughan-ipc-types/tests/.*\.rs$''',
+  '''(?i)^vaughan-trusted-hosts/tests/.*\.rs$''',
+  '''(?i)^Vaughan-Dioxus/src/browser\.rs$''',
+  '''(?i)^Vaughan-Dioxus/src/chain_bootstrap\.rs$''',
+]

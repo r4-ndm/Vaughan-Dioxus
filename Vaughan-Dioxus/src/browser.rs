@@ -46,7 +46,7 @@ pub struct TrustedDapp {
 }
 
 macro_rules! trusted_dapp {
-    ($name:literal, $url:literal, $desc:literal, $cat:literal, [$( $c:literal ),* $(,)?] ) => {
+    ($name:literal, $url:expr, $desc:literal, $cat:literal, [$( $c:literal ),* $(,)?] ) => {
         TrustedDapp {
             name: $name,
             url: $url,
@@ -59,29 +59,172 @@ macro_rules! trusted_dapp {
 
 /// Curated list shown in the DApps view; URLs must match [`ALLOWED_HTTPS_HOST_SUFFIXES`](vaughan_trusted_hosts::ALLOWED_HTTPS_HOST_SUFFIXES) (except loopback http).
 pub const TRUSTED_DAPP_ENTRIES: &[TrustedDapp] = &[
-    trusted_dapp!("Uniswap", "https://app.uniswap.org", "Swap, earn, and build on the leading decentralized crypto trading protocol.", "DEX", [1, 10, 137, 42161, 8453]),
-    trusted_dapp!("SushiSwap", "https://www.sushi.com/swap", "Community-driven DEX and DeFi platform.", "DEX", [1, 10, 137, 42161, 56]),
-    trusted_dapp!("PancakeSwap", "https://pancakeswap.finance", "Popular DEX on BNB Chain.", "DEX", [56, 1]),
-    trusted_dapp!("Curve Finance", "https://curve.fi", "Stablecoin-focused DEX with low slippage.", "DEX", [1, 10, 137, 42161]),
-    trusted_dapp!("Aave", "https://app.aave.com", "Leading decentralized lending protocol.", "Lending", [1, 10, 137, 42161, 43114]),
-    trusted_dapp!("Compound", "https://app.compound.finance/?market=usdc-mainnet", "Algorithmic money market protocol.", "Lending", [1, 10, 137, 42161]),
-    trusted_dapp!("1inch", "https://1inch.com/swap", "DEX aggregator for best swap rates.", "DEX", [1, 10, 137, 42161, 56]),
-    trusted_dapp!("OpenSea", "https://opensea.io", "Largest NFT marketplace.", "NFT", [1, 10, 137, 42161, 8453]),
-    trusted_dapp!("Stargate Finance", "https://stargate.finance", "Cross-chain bridge powered by LayerZero.", "Bridge", [1, 10, 137, 42161, 56, 43114]),
-    trusted_dapp!("PulseChain Faucet", "https://faucet.v4.testnet.pulsechain.com/", "Get free PLS and other tokens for testing on PulseChain V4 Testnet.", "Tools", [943]),
-    trusted_dapp!("PulseX (Local)", "http://127.0.0.1:3691", "Local PulseX instance — start the server first, then open here.", "DEX", [369, 943]),
-    trusted_dapp!("PulseX", "https://app.pulsex.com", "The most liquid DEX on PulseChain.", "DEX", [369, 943]),
-    trusted_dapp!("Piteas", "https://app.piteas.io", "DEX aggregator on PulseChain.", "DeFi", [369, 943]),
-    trusted_dapp!("GoPulse", "https://gopulse.com", "PulseChain portfolio tracker and explorer.", "Data", [369]),
-    trusted_dapp!("Internet Money", "https://internetmoney.io", "Native PulseChain wallet and swap.", "Wallet", [369]),
-    trusted_dapp!("Provex (Revolut)", "https://app.provex.com/#/?provider=revolut", "Crypto on-ramp via Revolut.", "DeFi", [1, 10, 137, 42161, 56, 43114, 8453]),
-    trusted_dapp!("LibertySwap", "https://libertyswap.finance/", "Community-driven DEX for PulseChain.", "DEX", [369]),
-    trusted_dapp!("0xCurv", "https://www.0xcurv.win/", "DeFi protocol and decentralized application.", "DeFi", [369, 1]),
-    trusted_dapp!("Pump Tires", "https://pump.tires/", "Fair-launch platform for PulseChain tokens.", "DEX", [369]),
-    trusted_dapp!("9mm DEX", "https://dex.9mm.pro/swap", "DEX and launchpad on PulseChain.", "DEX", [369]),
-    trusted_dapp!("9Inch", "https://9inch.io/?chain=pulse&inputCurrency=0x6B175474E89094C44Da98b954EedeAC495271d0F&outputCurrency=0x78a2809e8e2ef8e07429559f15703Ee20E885588", "Decentralized exchange and yield farming on PulseChain.", "DEX", [369]),
-    trusted_dapp!("Hyperliquid", "https://app.hyperliquid.xyz/trade", "Decentralized perpetual exchange with orderbook architecture.", "DEX", [42161]),
-    trusted_dapp!("Aster DEX", "https://www.asterdex.com/en/trade/pro/futures/ASTERUSDT", "Next-gen perpetual DEX for traders.", "DEX", [1, 42161, 369]),
+    trusted_dapp!(
+        "Uniswap",
+        "https://app.uniswap.org",
+        "Swap, earn, and build on the leading decentralized crypto trading protocol.",
+        "DEX",
+        [1, 10, 137, 42161, 8453]
+    ),
+    trusted_dapp!(
+        "SushiSwap",
+        "https://www.sushi.com/swap",
+        "Community-driven DEX and DeFi platform.",
+        "DEX",
+        [1, 10, 137, 42161, 56]
+    ),
+    trusted_dapp!(
+        "PancakeSwap",
+        "https://pancakeswap.finance",
+        "Popular DEX on BNB Chain.",
+        "DEX",
+        [56, 1]
+    ),
+    trusted_dapp!(
+        "Curve Finance",
+        "https://curve.fi",
+        "Stablecoin-focused DEX with low slippage.",
+        "DEX",
+        [1, 10, 137, 42161]
+    ),
+    trusted_dapp!(
+        "Aave",
+        "https://app.aave.com",
+        "Leading decentralized lending protocol.",
+        "Lending",
+        [1, 10, 137, 42161, 43114]
+    ),
+    trusted_dapp!(
+        "Compound",
+        "https://app.compound.finance/?market=usdc-mainnet",
+        "Algorithmic money market protocol.",
+        "Lending",
+        [1, 10, 137, 42161]
+    ),
+    trusted_dapp!(
+        "1inch",
+        "https://1inch.com/swap",
+        "DEX aggregator for best swap rates.",
+        "DEX",
+        [1, 10, 137, 42161, 56]
+    ),
+    trusted_dapp!(
+        "OpenSea",
+        "https://opensea.io",
+        "Largest NFT marketplace.",
+        "NFT",
+        [1, 10, 137, 42161, 8453]
+    ),
+    trusted_dapp!(
+        "Stargate Finance",
+        "https://stargate.finance",
+        "Cross-chain bridge powered by LayerZero.",
+        "Bridge",
+        [1, 10, 137, 42161, 56, 43114]
+    ),
+    trusted_dapp!(
+        "PulseChain Faucet",
+        "https://faucet.v4.testnet.pulsechain.com/",
+        "Get free PLS and other tokens for testing on PulseChain V4 Testnet.",
+        "Tools",
+        [943]
+    ),
+    trusted_dapp!(
+        "PulseX (Local)",
+        "http://127.0.0.1:3691",
+        "Local PulseX instance — start the server first, then open here.",
+        "DEX",
+        [369, 943]
+    ),
+    trusted_dapp!(
+        "PulseX",
+        "https://app.pulsex.com",
+        "The most liquid DEX on PulseChain.",
+        "DEX",
+        [369, 943]
+    ),
+    trusted_dapp!(
+        "Piteas",
+        "https://app.piteas.io",
+        "DEX aggregator on PulseChain.",
+        "DeFi",
+        [369, 943]
+    ),
+    trusted_dapp!(
+        "GoPulse",
+        "https://gopulse.com",
+        "PulseChain portfolio tracker and explorer.",
+        "Data",
+        [369]
+    ),
+    trusted_dapp!(
+        "Internet Money",
+        "https://internetmoney.io",
+        "Native PulseChain wallet and swap.",
+        "Wallet",
+        [369]
+    ),
+    trusted_dapp!(
+        "Provex (Revolut)",
+        "https://app.provex.com/#/?provider=revolut",
+        "Crypto on-ramp via Revolut.",
+        "DeFi",
+        [1, 10, 137, 42161, 56, 43114, 8453]
+    ),
+    trusted_dapp!(
+        "LibertySwap",
+        "https://libertyswap.finance/",
+        "Community-driven DEX for PulseChain.",
+        "DEX",
+        [369]
+    ),
+    trusted_dapp!(
+        "0xCurv",
+        "https://www.0xcurv.win/",
+        "DeFi protocol and decentralized application.",
+        "DeFi",
+        [369, 1]
+    ),
+    trusted_dapp!(
+        "Pump Tires",
+        "https://pump.tires/",
+        "Fair-launch platform for PulseChain tokens.",
+        "DEX",
+        [369]
+    ),
+    trusted_dapp!(
+        "9mm DEX",
+        "https://dex.9mm.pro/swap",
+        "DEX and launchpad on PulseChain.",
+        "DEX",
+        [369]
+    ),
+    trusted_dapp!(
+        "9Inch",
+        concat!(
+            "https://9inch.io/?chain=pulse&inputCurrency=0x",
+            "6B175474E89094C44Da98b954EedeAC495271d0F",
+            "&outputCurrency=0x",
+            "78a2809e8e2ef8e07429559f15703Ee20E885588"
+        ),
+        "Decentralized exchange and yield farming on PulseChain.",
+        "DEX",
+        [369]
+    ),
+    trusted_dapp!(
+        "Hyperliquid",
+        "https://app.hyperliquid.xyz/trade",
+        "Decentralized perpetual exchange with orderbook architecture.",
+        "DEX",
+        [42161]
+    ),
+    trusted_dapp!(
+        "Aster DEX",
+        "https://www.asterdex.com/en/trade/pro/futures/ASTERUSDT",
+        "Next-gen perpetual DEX for traders.",
+        "DEX",
+        [1, 42161, 369]
+    ),
 ];
 
 /// Tauri filters core dApps by active chain; empty `chains` means all chains.

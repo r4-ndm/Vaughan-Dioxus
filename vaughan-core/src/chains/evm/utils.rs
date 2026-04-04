@@ -30,19 +30,18 @@ pub fn truncate_address(address: &str, prefix_len: usize, suffix_len: usize) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_only::vitalik_addr_mixed;
 
     #[test]
     fn test_is_valid_address() {
-        assert!(is_valid_address(
-            "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
-        ));
+        assert!(is_valid_address(vitalik_addr_mixed()));
         assert!(!is_valid_address("invalid"));
         assert!(!is_valid_address("0xinvalid"));
     }
 
     #[test]
     fn test_truncate_address() {
-        let addr = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045";
+        let addr = vitalik_addr_mixed();
         assert_eq!(truncate_address(addr, 6, 4), "0xd8dA...6045");
     }
 }

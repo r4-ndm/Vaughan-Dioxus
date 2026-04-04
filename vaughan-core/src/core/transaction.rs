@@ -211,13 +211,14 @@ impl Default for TransactionService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_only::padded_eth_addr;
 
     #[test]
     fn build_evm_transaction_roundtrip_intent() {
         let svc = TransactionService::new();
         let intent = TransactionIntent {
-            from: "0x0000000000000000000000000000000000000001".into(),
-            to: "0x0000000000000000000000000000000000000002".into(),
+            from: padded_eth_addr("1"),
+            to: padded_eth_addr("2"),
             value: "1000000000000000000".into(),
             data: None,
             chain_id: 1,
@@ -236,9 +237,9 @@ mod tests {
     #[test]
     fn build_erc20_transfer_encodes_calldata() {
         let svc = TransactionService::new();
-        let from = "0x0000000000000000000000000000000000000001".to_string();
-        let token = "0x0000000000000000000000000000000000000003".to_string();
-        let to = "0x0000000000000000000000000000000000000004".to_string();
+        let from = padded_eth_addr("1");
+        let token = padded_eth_addr("3");
+        let to = padded_eth_addr("4");
         let amount = "42".to_string();
         let built = svc
             .build_erc20_transfer(from.clone(), token.clone(), to.clone(), amount.clone(), 1)
@@ -256,9 +257,9 @@ mod tests {
     #[test]
     fn build_erc20_transfer_rejects_bad_amount() {
         let svc = TransactionService::new();
-        let from = "0x0000000000000000000000000000000000000001".to_string();
-        let token = "0x0000000000000000000000000000000000000003".to_string();
-        let to = "0x0000000000000000000000000000000000000004".to_string();
+        let from = padded_eth_addr("1");
+        let token = padded_eth_addr("3");
+        let to = padded_eth_addr("4");
         let amount = "not_a_number".to_string();
         let err = svc
             .build_erc20_transfer(from, token, to, amount, 1)

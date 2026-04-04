@@ -10,6 +10,9 @@ pub mod models;
 pub mod monitoring;
 pub mod security;
 
+#[cfg(test)]
+mod test_only;
+
 pub use chains::{ChainAdapter, ChainType};
 pub use error::WalletError;
 pub use models::*;

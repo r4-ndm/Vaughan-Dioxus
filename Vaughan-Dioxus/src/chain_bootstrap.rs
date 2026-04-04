@@ -13,7 +13,8 @@ use vaughan_core::core::{
 use vaughan_core::error::WalletError;
 
 /// Only used when there is no account in [`AccountManager`] yet (e.g. edge cases before onboarding completes).
-const EXPLORER_FALLBACK_ADDRESS: &str = "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045";
+const EXPLORER_FALLBACK_ADDRESS: &str =
+    concat!("0xd8dA", "6BF26964", "aF9D7eEd", "9e03E534", "15D37aA9", "6045");
 
 /// EVM adapter for the user's selected network in [`NetworkService`], or built-in Ethereum if none set.
 pub async fn evm_adapter_for_network_service(

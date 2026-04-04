@@ -402,7 +402,7 @@ mod tests {
     fn load_migrates_tauri_style_state_and_rewrites_disk() {
         let dir = tempfile::tempdir_in(test_temp_dir()).expect("test tempdir");
         let path = dir.path().join("tauri_like_state.json");
-        let addr = "0xd8da6bf26964af9d7eed9e03e53415d37aa96045";
+        let addr = crate::test_only::vitalik_addr_lower();
         let json = format!(
             r#"{{
                 "version": 1,
