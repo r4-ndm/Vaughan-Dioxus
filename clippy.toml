@@ -1,0 +1,4 @@
+# Workspace Clippy defaults (see https://doc.rust-lang.org/clippy/lint-configuration.html)
+# CI runs: cargo clippy --workspace --all-targets -- -D warnings
+cognitive-complexity-threshold = 35
+too-many-lines-threshold = 1200

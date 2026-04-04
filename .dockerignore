@@ -1,0 +1,7 @@
+target/
+target-local/
+.git/
+.tmp-build/
+.tmp-tests/
+**/.topnav_spike_*.txt
+**/.spike_*.txt

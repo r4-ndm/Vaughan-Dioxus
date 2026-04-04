@@ -40,6 +40,12 @@ Nested `Vaughan-Dioxus/Vaughan-Dioxus/` holds extra reference notes only; the **
 
 GitHub Actions runs `cargo fmt`, `clippy -D warnings`, tests, and `cargo audit` (see [.github/workflows/ci.yml](.github/workflows/ci.yml)).
 
+**Lint config:** [`rustfmt.toml`](rustfmt.toml) and [`clippy.toml`](clippy.toml) at the repo root.
+
+**Tests:** Unit tests live next to sources (`src/**/*.rs`); integration tests also live under `*/tests/*.rs` (for example [`vaughan-core/tests/crypto_smoke.rs`](vaughan-core/tests/crypto_smoke.rs)). Run `cargo test --workspace`.
+
+**Docker (optional):** [`Dockerfile`](Dockerfile) mirrors the CI test command in a Debian bookworm image (installs Tauri Linux deps). Build with `docker build -t vaughan-ci .` — useful when you want a reproducible environment; it does not replace a normal desktop dev setup for the GUI.
+
 ## Automated scanners
 
 Some tools flag test-only strings (for example literals inside `#[cfg(test)]` modules) as “secrets.” Those fixtures are **not** production credentials. Run the real suite with `cargo test --workspace`.
