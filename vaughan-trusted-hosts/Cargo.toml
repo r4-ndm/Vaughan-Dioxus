@@ -1,0 +1,9 @@
+[package]
+name = "vaughan-trusted-hosts"
+version.workspace = true
+edition.workspace = true
+description = "Canonical trusted dApp HTTPS host suffix list for Vaughan"
+license.workspace = true
+repository.workspace = true
+
+[lib]

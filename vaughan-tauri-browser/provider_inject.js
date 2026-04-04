@@ -11,7 +11,7 @@
 (function () {
   if (window.__VAUGHAN_ETH_INJECTED__) return;
 
-  /** Keep in sync with wallet `browser.rs` ALLOWED_HOST_SUFFIXES and `index.html` trustedWalletBridgeOrigin. */
+  /** Keep in sync with `vaughan-trusted-hosts` ALLOWED_HTTPS_HOST_SUFFIXES and `index.html` trustedWalletBridgeOrigin. */
   var TRUSTED_HOST_SUFFIXES = [
     "uniswap.org",
     "uniswap.com",

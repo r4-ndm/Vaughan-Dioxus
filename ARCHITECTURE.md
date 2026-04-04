@@ -85,7 +85,7 @@ All Dioxus-side async flows ultimately delegate to `vaughan-core` services and c
 
 ### Dual navigation modes (top-level URL)
 
-The main webview uses one of two modes, chosen from `--url` using the **same host allowlist** as the wallet (`Vaughan-Dioxus/src/browser.rs` `validate_whitelisted_dapp_url` / `ALLOWED_HOST_SUFFIXES`, mirrored in `lib.rs` and `provider_inject.js`). At runtime, **`navigate_trusted_dapp`** applies that same validation and calls `WebviewWindow::navigate` on `main`, so the shell or a trusted top-level page can switch to another allowlisted URL without respawning the process; capabilities mirror `remote.urls` plus local shell access, and Rust still rejects anything off-list.
+The main webview uses one of two modes, chosen from `--url` using the **same host allowlist** as the wallet: `vaughan-trusted-hosts` (`ALLOWED_HTTPS_HOST_SUFFIXES` + `hostname_is_whitelisted`), used from `Vaughan-Dioxus/src/browser.rs` (`validate_whitelisted_dapp_url`) and `vaughan-tauri-browser/src/lib.rs`, with `provider_inject.js` and `index.html` kept in sync (enforced by `vaughan-trusted-hosts` unit tests). At runtime, **`navigate_trusted_dapp`** applies that same validation and calls `WebviewWindow::navigate` on `main`, so the shell or a trusted top-level page can switch to another allowlisted URL without respawning the process; capabilities mirror `remote.urls` plus local shell access, and Rust still rejects anything off-list.
 
 | Mode | When | Main document | Chrome |
 |------|------|---------------|--------|

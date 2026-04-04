@@ -120,7 +120,7 @@
     // Cross-origin dApp iframes under this shell (e.g. app.uniswap.org) do not get __TAURI__ on WebKit/Wry.
     // Child frames postMessage here; we forward ipc_request to Tauri and reply back.
     (function vaughanWalletBridgeFromDappFrame() {
-      /** Must match wallet `browser.rs` ALLOWED_HOST_SUFFIXES + http loopback for PulseX local. */
+      /** Must match `vaughan-trusted-hosts` ALLOWED_HTTPS_HOST_SUFFIXES + http loopback for PulseX local. */
       function trustedWalletBridgeOrigin(o) {
         try {
           var u = new URL(o);

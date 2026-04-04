@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "vaughan-core",
+    "vaughan-trusted-hosts",
     "Vaughan-Dioxus",
     "vaughan-tauri-browser",
     "vaughan-ipc-types",
@@ -12,7 +13,7 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Vaughan Team"]
 license = "MIT OR Apache-2.0"
-repository = ""
+repository = "https://github.com/r4-ndm/Vaughan-Dioxus"
 
 # Single Alloy version for all crates (Ethereum primitives, RPC, signing).
 [workspace.dependencies]

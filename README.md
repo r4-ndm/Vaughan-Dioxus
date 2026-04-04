@@ -23,6 +23,7 @@ cargo build --release -p vaughan-tauri-browser && cargo run --release -p vaughan
 | `Vaughan-Dioxus/` | Wallet UI + IPC server + browser subprocess control |
 | `vaughan-tauri-browser/` | Tauri webview + provider injection + IPC client |
 | `vaughan-ipc-types/` | Shared IPC message types |
+| `vaughan-trusted-hosts/` | Single Rust allowlist for trusted dApp HTTPS hosts (JS mirrors checked by tests) |
 | `test-dapp/` | Minimal page for provider smoke tests |
 
 Nested `Vaughan-Dioxus/Vaughan-Dioxus/` holds extra reference notes only; the **crate root** is `Vaughan-Dioxus/` (see workspace `Cargo.toml`).
@@ -39,6 +40,10 @@ Nested `Vaughan-Dioxus/Vaughan-Dioxus/` holds extra reference notes only; the **
 
 GitHub Actions runs `cargo fmt`, `clippy -D warnings`, tests, and `cargo audit` (see [.github/workflows/ci.yml](.github/workflows/ci.yml)).
 
+## Automated scanners
+
+Some tools flag test-only strings (for example literals inside `#[cfg(test)]` modules) as “secrets.” Those fixtures are **not** production credentials. Run the real suite with `cargo test --workspace`.
+
 ## License
 
-Dual-licensed under **MIT OR Apache-2.0**, at your option, consistent with workspace `Cargo.toml`. The MIT text is in [LICENSE-MIT](LICENSE-MIT). For Apache-2.0, use the [standard license text](https://www.apache.org/licenses/LICENSE-2.0.txt).
+Dual-licensed under **MIT OR Apache-2.0**, at your option, consistent with workspace `Cargo.toml`. The MIT text is in [LICENSE](LICENSE) and [LICENSE-MIT](LICENSE-MIT). For Apache-2.0, use the [standard license text](https://www.apache.org/licenses/LICENSE-2.0.txt).

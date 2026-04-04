@@ -29,6 +29,7 @@ use tauri::Url;
 use tauri::WebviewUrl;
 
 use vaughan_ipc_types::{IpcRequest, IpcResponse};
+use vaughan_trusted_hosts::hostname_is_whitelisted;
 
 /// Cap wallet control lines so a bug or broken pipe cannot grow unbounded in memory.
 const MAX_WALLET_STDIN_LINE_BYTES: usize = 8192;
@@ -166,47 +167,6 @@ fn parse_args() -> Option<CliConfig> {
         token: token?,
         initial_url,
     })
-}
-
-/// Host suffixes allowed for **https** (`host == suffix` or a subdomain of `suffix`).
-/// Keep in sync with `Vaughan-Dioxus/src/browser.rs` `ALLOWED_HOST_SUFFIXES` and `provider_inject.js`.
-const ALLOWED_HOST_SUFFIXES: &[&str] = &[
-    "uniswap.org",
-    "uniswap.com",
-    "sushi.com",
-    "pancakeswap.finance",
-    "curve.fi",
-    "aave.com",
-    "compound.finance",
-    "1inch.com",
-    "opensea.io",
-    "stargate.finance",
-    "v4.testnet.pulsechain.com",
-    "pulsex.com",
-    "piteas.io",
-    "gopulse.com",
-    "internetmoney.io",
-    "provex.com",
-    "libertyswap.finance",
-    "0xcurv.win",
-    "pump.tires",
-    "9mm.pro",
-    "9inch.io",
-    "hyperliquid.xyz",
-    "asterdex.com",
-];
-
-fn hostname_is_whitelisted(host: &str) -> bool {
-    let h = host.trim().trim_end_matches('.').to_lowercase();
-    if matches!(h.as_str(), "localhost" | "127.0.0.1") {
-        return true;
-    }
-    for suffix in ALLOWED_HOST_SUFFIXES {
-        if h == *suffix || h.ends_with(&format!(".{suffix}")) {
-            return true;
-        }
-    }
-    false
 }
 
 /// Parse and validate a URL for **top-level** navigation (parity with wallet

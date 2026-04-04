@@ -1,5 +1,12 @@
 /target/
+/target-local/
 .tmp-tests/
+.tmp-build/
+
+# Local secrets (never commit)
+.env
+.env.*
+!.env.example
 
 # TOPNAV spike confirmation artifacts (see vaughan-tauri-browser/doc/TOPNAV-SPIKE.md)
 **/.topnav_spike_*.txt

@@ -8323,6 +8323,7 @@ dependencies = [
  "url",
  "vaughan-core",
  "vaughan-ipc-types",
+ "vaughan-trusted-hosts",
 ]
 
 [[package]]
@@ -8348,7 +8349,12 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "vaughan-ipc-types",
+ "vaughan-trusted-hosts",
 ]
+
+[[package]]
+name = "vaughan-trusted-hosts"
+version = "0.1.0"
 
 [[package]]
 name = "vcpkg"

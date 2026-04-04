@@ -144,6 +144,7 @@ pub fn decrypt_data(encrypted: &[u8], password: &str) -> Result<Vec<u8>, WalletE
 
 #[cfg(test)]
 mod tests {
+    // Strings below are test fixtures only (not production secrets).
     use super::*;
     use proptest::prelude::*;
 

@@ -20,6 +20,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use url::Url;
 
+pub use vaughan_trusted_hosts::hostname_is_whitelisted;
+
 use crate::services::AppServices;
 use crate::wallet_ipc::WalletIpcServer;
 
@@ -55,7 +57,7 @@ macro_rules! trusted_dapp {
     };
 }
 
-/// Curated list shown in the DApps view; URLs must match [`ALLOWED_HOST_SUFFIXES`] (except loopback http).
+/// Curated list shown in the DApps view; URLs must match [`ALLOWED_HTTPS_HOST_SUFFIXES`](vaughan_trusted_hosts::ALLOWED_HTTPS_HOST_SUFFIXES) (except loopback http).
 pub const TRUSTED_DAPP_ENTRIES: &[TrustedDapp] = &[
     trusted_dapp!("Uniswap", "https://app.uniswap.org", "Swap, earn, and build on the leading decentralized crypto trading protocol.", "DEX", [1, 10, 137, 42161, 8453]),
     trusted_dapp!("SushiSwap", "https://www.sushi.com/swap", "Community-driven DEX and DeFi platform.", "DEX", [1, 10, 137, 42161, 56]),
@@ -112,34 +114,6 @@ pub fn google_favicon_url_for_dapp(url: &str) -> Option<String> {
         host
     ))
 }
-
-/// Host suffixes allowed for **https** (`host == suffix` or a subdomain of `suffix`).
-/// Keep in sync with [`TRUSTED_DAPP_ENTRIES`]. Loopback uses http only; see [`validate_whitelisted_dapp_url`].
-const ALLOWED_HOST_SUFFIXES: &[&str] = &[
-    "uniswap.org",
-    "uniswap.com",
-    "sushi.com",
-    "pancakeswap.finance",
-    "curve.fi",
-    "aave.com",
-    "compound.finance",
-    "1inch.com",
-    "opensea.io",
-    "stargate.finance",
-    "v4.testnet.pulsechain.com",
-    "pulsex.com",
-    "piteas.io",
-    "gopulse.com",
-    "internetmoney.io",
-    "provex.com",
-    "libertyswap.finance",
-    "0xcurv.win",
-    "pump.tires",
-    "9mm.pro",
-    "9inch.io",
-    "hyperliquid.xyz",
-    "asterdex.com",
-];
 
 static BROWSER_STATE: OnceLock<Arc<Mutex<BrowserInner>>> = OnceLock::new();
 
@@ -223,19 +197,6 @@ impl BrowserInner {
         self.child = Some(child);
         Ok(())
     }
-}
-
-pub fn hostname_is_whitelisted(host: &str) -> bool {
-    let h = host.trim().trim_end_matches('.').to_lowercase();
-    if matches!(h.as_str(), "localhost" | "127.0.0.1") {
-        return true;
-    }
-    for suffix in ALLOWED_HOST_SUFFIXES {
-        if h == *suffix || h.ends_with(&format!(".{suffix}")) {
-            return true;
-        }
-    }
-    false
 }
 
 /// Validates URL scheme and host against the Tauri-parity trusted list. Returns normalized URL string.

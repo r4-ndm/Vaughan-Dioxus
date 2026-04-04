@@ -10,6 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 vaughan-core = { path = "../vaughan-core" }
+vaughan-trusted-hosts = { path = "../vaughan-trusted-hosts" }
 dioxus = { version = "0.7", features = ["desktop"] }
 dioxus-desktop = { version = "0.7", optional = true }
 dioxus-mobile = { version = "0.7.0-alpha.2", optional = true }
