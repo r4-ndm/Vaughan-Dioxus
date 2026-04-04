@@ -50,7 +50,7 @@ GitHub Actions runs `cargo fmt`, `clippy -D warnings`, tests, and `cargo audit` 
 
 Some tools flag test-only strings (for example literals inside `#[cfg(test)]` modules) as “secrets.” Those fixtures are **not** production credentials. Run the real suite with `cargo test --workspace`.
 
-**Gitleaks:** [`.gitleaks.toml`](.gitleaks.toml) extends the default rules and allowlists paths that intentionally contain public chain addresses, IPC test vectors, or curated dApp URLs. Run `gitleaks detect --source .` locally before pushing if you use it.
+**Gitleaks (optional):** [`.gitleaks.toml`](.gitleaks.toml) extends the default rules and allowlists paths that intentionally contain public chain addresses, IPC test vectors, or curated dApp URLs. CI does not require it; install a binary if you want local checks, then run `gitleaks detect --source . -c .gitleaks.toml`. Examples: [GitHub releases](https://github.com/gitleaks/gitleaks/releases), `go install github.com/gitleaks/gitleaks/v8@latest`, or on Arch-based distros an AUR helper (e.g. `yay -S gitleaks`).
 
 ## License
 
