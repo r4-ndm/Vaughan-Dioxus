@@ -48,9 +48,9 @@ GitHub Actions runs `cargo fmt`, `clippy -D warnings`, tests, and `cargo audit` 
 
 ## Automated scanners
 
-Some tools flag test-only strings (for example literals inside `#[cfg(test)]` modules) as “secrets.” Those fixtures are **not** production credentials. Run the real suite with `cargo test --workspace`.
+Some websites and tools scan public repos and report “secrets.” Often they are wrong: test code uses fake passwords and dummy data on purpose. **Real checks:** run `cargo test --workspace`.
 
-**Gitleaks (optional):** [`.gitleaks.toml`](.gitleaks.toml) extends the default rules and allowlists paths that intentionally contain public chain addresses, IPC test vectors, or curated dApp URLs. CI does not require it; install a binary if you want local checks, then run `gitleaks detect --source . -c .gitleaks.toml`. Examples: [GitHub releases](https://github.com/gitleaks/gitleaks/releases), `go install github.com/gitleaks/gitleaks/v8@latest`, or on Arch-based distros an AUR helper (e.g. `yay -S gitleaks`).
+**Gitleaks (you can skip this):** [Gitleaks](https://github.com/gitleaks/gitleaks) is a separate program that searches the repo for things that *look* like leaked keys or passwords. You do **not** need it to build or run Vaughan. If you install it anyway, use [`.gitleaks.toml`](.gitleaks.toml) so it ignores a few files that only contain public addresses and test data. Command: `gitleaks detect --source . -c .gitleaks.toml`. Install: [releases page](https://github.com/gitleaks/gitleaks/releases), or `yay -S gitleaks` on Arch-based systems.
 
 ## License
 
