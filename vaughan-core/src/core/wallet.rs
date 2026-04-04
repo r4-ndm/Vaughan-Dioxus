@@ -63,6 +63,17 @@ impl WalletState {
         }
     }
 
+    /// Replace the in-memory account list and active account (e.g. after reload from disk / unlock).
+    pub async fn replace_accounts_and_active(
+        &self,
+        accounts: Vec<Account>,
+        active: Option<Account>,
+    ) {
+        let chosen = active.or_else(|| accounts.first().cloned());
+        *self.accounts.write().await = accounts;
+        *self.active_account.write().await = chosen;
+    }
+
     pub async fn accounts(&self) -> Vec<Account> {
         self.accounts.read().await.clone()
     }

@@ -127,14 +127,101 @@ pub fn optimism_mainnet() -> EvmNetworkConfig {
     .with_explorer_api("https://api-optimistic.etherscan.io/api")
 }
 
-/// Default built-in EVM networks.
+/// Ethereum Sepolia (matches Vaughan-Tauri `ethereum_sepolia`).
+pub fn ethereum_sepolia() -> EvmNetworkConfig {
+    EvmNetworkConfig::new(
+        "sepolia",
+        "Ethereum Sepolia",
+        11_155_111,
+        "https://ethereum-sepolia-rpc.publicnode.com",
+        "ETH",
+        "Sepolia Ether",
+    )
+    .with_explorer("https://sepolia.etherscan.io")
+    .with_explorer_api("https://api-sepolia.etherscan.io/api")
+}
+
+/// PulseChain Testnet V4 (matches Vaughan-Tauri `pulsechain_testnet_v4`).
+pub fn pulsechain_testnet_v4() -> EvmNetworkConfig {
+    EvmNetworkConfig::new(
+        "pulsechain-testnet-v4",
+        "PulseChain Testnet V4",
+        943,
+        "https://rpc.v4.testnet.pulsechain.com",
+        "tPLS",
+        "Test PulseChain",
+    )
+    .with_explorer("https://scan.v4.testnet.pulsechain.com")
+    .with_explorer_api("https://api.scan.v4.testnet.pulsechain.com/api")
+}
+
+/// Polygon Amoy (matches Vaughan-Tauri `polygon_amoy`).
+pub fn polygon_amoy() -> EvmNetworkConfig {
+    EvmNetworkConfig::new(
+        "polygon-amoy",
+        "Polygon Amoy",
+        80_002,
+        "https://polygon-amoy-bor-rpc.publicnode.com",
+        "MATIC",
+        "Amoy Matic",
+    )
+    .with_explorer("https://amoy.polygonscan.com")
+    .with_explorer_api("https://api-amoy.polygonscan.com/api")
+}
+
+/// BSC Mainnet (matches Vaughan-Tauri `bsc_mainnet`).
+pub fn bsc_mainnet() -> EvmNetworkConfig {
+    EvmNetworkConfig::new(
+        "bsc",
+        "BSC Mainnet",
+        56,
+        "https://bsc-dataseed.binance.org",
+        "BNB",
+        "Binance Coin",
+    )
+    .with_explorer("https://bscscan.com")
+}
+
+/// Avalanche C-Chain (matches Vaughan-Tauri `avalanche_cchain`).
+pub fn avalanche_cchain() -> EvmNetworkConfig {
+    EvmNetworkConfig::new(
+        "avalanche",
+        "Avalanche C-Chain",
+        43_114,
+        "https://api.avax.network/ext/bc/C/rpc",
+        "AVAX",
+        "Avalanche",
+    )
+    .with_explorer("https://snowtrace.io")
+}
+
+/// Base Mainnet (matches Vaughan-Tauri `base_mainnet`).
+pub fn base_mainnet() -> EvmNetworkConfig {
+    EvmNetworkConfig::new(
+        "base",
+        "Base Mainnet",
+        8453,
+        "https://mainnet.base.org",
+        "ETH",
+        "Ethereum",
+    )
+    .with_explorer("https://basescan.org")
+}
+
+/// Default built-in EVM networks (same set and order as Vaughan-Tauri `all_networks()`).
 pub fn builtin_networks() -> Vec<EvmNetworkConfig> {
     vec![
         ethereum_mainnet(),
+        ethereum_sepolia(),
         pulsechain_mainnet(),
+        pulsechain_testnet_v4(),
         polygon_mainnet(),
+        polygon_amoy(),
+        bsc_mainnet(),
         arbitrum_one(),
         optimism_mainnet(),
+        avalanche_cchain(),
+        base_mainnet(),
     ]
 }
 

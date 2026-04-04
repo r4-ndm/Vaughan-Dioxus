@@ -21,7 +21,7 @@ pub fn ReceiveView(on_back: Callback<()>) -> Element {
 
     use_effect(move || {
         let mgr = services.account_manager.clone();
-        let mut receive_address = receive_address.clone();
+        let mut receive_address = receive_address;
         spawn(async move {
             let s = match mgr.active_account().await {
                 Some(a) => Some(format!("{:?}", a.address)),
@@ -37,7 +37,6 @@ pub fn ReceiveView(on_back: Callback<()>) -> Element {
 
     let on_row_copy = {
         let mut rt = rt.clone();
-        let receive_address = receive_address.clone();
         move |_| {
             let addr_opt = receive_address.read().clone();
             let Some(addr) = addr_opt else {

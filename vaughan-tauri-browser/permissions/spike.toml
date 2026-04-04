@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-spike-ping"
+description = "TOPNAV spike: allow invoke('spike_ping') from webviews to verify __TAURI__ on external top-level documents."
+commands.allow = ["spike_ping"]

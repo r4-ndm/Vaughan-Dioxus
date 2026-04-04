@@ -44,13 +44,13 @@ pub fn AddressDisplay(address: String) -> Element {
     let addr_for_copy = address.clone();
 
     let on_click = {
-        let mut copied = copied.clone();
+        let mut copied = copied;
         move |_| {
             if copy_text(&addr_for_copy).is_err() {
                 return;
             }
             copied.set(true);
-            let mut c = copied.clone();
+            let mut c = copied;
             spawn(async move {
                 tokio::time::sleep(Duration::from_secs(2)).await;
                 c.set(false);

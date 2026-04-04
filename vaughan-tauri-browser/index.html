@@ -108,32 +108,86 @@
   </header>
 
   <div class="content">
-    <iframe id="webview" sandbox="allow-scripts allow-same-origin allow-forms allow-popups"></iframe>
+    <!-- No sandbox: many DeFi UIs use nested iframes, popups, storage, or top navigation
+         that sandbox blocks or degrades; trust is enforced via allowlisted URLs + postMessage origin checks. -->
+    <iframe id="webview" fetchpriority="high" referrerpolicy="strict-origin-when-cross-origin"></iframe>
   </div>
 
   <script>
-    // Cross-origin dApp iframes (e.g. app.uniswap.org) do not get __TAURI__ on WebKit/Wry.
-    // Child frames postMessage here; we forward only ipc_request to Tauri and reply back.
+    // This document is the shell UI only. Allowlisted `--url` loads as WebviewUrl::External (no index.html);
+    // nested iframes there use the VAUGHAN_IPC relay in provider_inject.js on the top document instead.
+    //
+    // Cross-origin dApp iframes under this shell (e.g. app.uniswap.org) do not get __TAURI__ on WebKit/Wry.
+    // Child frames postMessage here; we forward ipc_request to Tauri and reply back.
     (function vaughanWalletBridgeFromDappFrame() {
+      /** Must match wallet `browser.rs` ALLOWED_HOST_SUFFIXES + http loopback for PulseX local. */
       function trustedWalletBridgeOrigin(o) {
         try {
           var u = new URL(o);
+          var h = u.hostname.toLowerCase().replace(/\.$/, "");
+          if (u.protocol === "http:") {
+            return h === "localhost" || h === "127.0.0.1";
+          }
           if (u.protocol !== "https:") return false;
-          var h = u.hostname.replace(/^www\./, "");
-          return (
-            h === "app.uniswap.org" ||
-            h.endsWith(".uniswap.org") ||
-            h === "uniswap.org" ||
-            h === "uniswap.com" ||
-            h.endsWith(".uniswap.com")
-          );
+          var suffixes = [
+            "uniswap.org",
+            "uniswap.com",
+            "sushi.com",
+            "pancakeswap.finance",
+            "curve.fi",
+            "aave.com",
+            "compound.finance",
+            "1inch.com",
+            "opensea.io",
+            "stargate.finance",
+            "v4.testnet.pulsechain.com",
+            "pulsex.com",
+            "piteas.io",
+            "gopulse.com",
+            "internetmoney.io",
+            "provex.com",
+            "libertyswap.finance",
+            "0xcurv.win",
+            "pump.tires",
+            "9mm.pro",
+            "9inch.io",
+            "hyperliquid.xyz",
+            "asterdex.com",
+          ];
+          for (var i = 0; i < suffixes.length; i++) {
+            var s = suffixes[i];
+            if (h === s || h.endsWith("." + s)) return true;
+          }
+          return false;
         } catch (e) {
           return false;
         }
       }
       window.addEventListener("message", function (e) {
         if (!e.data || e.data.type !== "VAUGHAN_IPC") return;
-        if (!trustedWalletBridgeOrigin(e.origin)) return;
+        if (!trustedWalletBridgeOrigin(e.origin)) {
+          // Untrusted nested frames (ads, widgets) still post here; reply immediately so
+          // their injected bridge does not sit until the 120s client timeout.
+          if (
+            e.data.cmd === "ipc_request" &&
+            e.source &&
+            e.source.postMessage &&
+            e.data.id != null
+          ) {
+            e.source.postMessage(
+              {
+                type: "VAUGHAN_IPC_RESPONSE",
+                id: e.data.id,
+                error: {
+                  message: "Origin not allowlisted for wallet bridge",
+                  code: 4901,
+                },
+              },
+              e.origin
+            );
+          }
+          return;
+        }
         if (e.data.cmd !== "ipc_request") return;
         var id = e.data.id;
         var args = e.data.args;
@@ -181,8 +235,7 @@
       });
     })();
 
-    // Shell-only: EIP-1193 + EIP-6963 run in every frame via Tauri
-    // `initialization_script_for_all_frames` (see provider_inject.js + lib.rs).
+    // EIP-1193 / EIP-6963: provider_inject.js via Tauri `initialization_script_for_all_frames` (all frames).
 
     function tauriInvoke(cmd, args) {
       const inv =
@@ -293,18 +346,20 @@
       }
     }
 
-    // Start on load. If the wallet launched us with `--url`, the Rust side injects
-    // `window.__VAUGHAN_PENDING_INITIAL_URL` before this script runs — open it here
-    // after IPC check. Do not navigate to about:blank in that case, or we race the
-    // old delayed eval and wipe Uniswap.
+    // Rust sets __VAUGHAN_PENDING_INITIAL_URL only for shell mode with a `--url` that is not loaded as External.
+    // IPC handshake runs either way; with a pending URL we navigate the iframe immediately so assets load in parallel.
+    const pendingInitial =
+      typeof window.__VAUGHAN_PENDING_INITIAL_URL === "string"
+        ? window.__VAUGHAN_PENDING_INITIAL_URL.trim()
+        : "";
+    if (pendingInitial) {
+      window.__VAUGHAN_OPEN_INITIAL_URL(pendingInitial);
+      try {
+        delete window.__VAUGHAN_PENDING_INITIAL_URL;
+      } catch (e) {}
+    }
     checkConnection().finally(() => {
-      const pending =
-        typeof window.__VAUGHAN_PENDING_INITIAL_URL === "string"
-          ? window.__VAUGHAN_PENDING_INITIAL_URL.trim()
-          : "";
-      if (pending) {
-        window.__VAUGHAN_OPEN_INITIAL_URL(pending);
-      } else {
+      if (!pendingInitial) {
         navigate("about:blank", { push: false });
       }
     });

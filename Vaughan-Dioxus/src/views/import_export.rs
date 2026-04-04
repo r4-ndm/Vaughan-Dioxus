@@ -70,13 +70,13 @@ pub fn ImportExportView(cmd_tx: Coroutine<ImportExportCmd>, on_back: Callback<()
     let mut modal_open = use_signal(|| false);
 
     let mut open_modal = {
-        let mut modal_open = modal_open.clone();
+        let mut modal_open = modal_open;
         move || *modal_open.write() = true
     };
 
     rsx! {
         div { style: "display: flex; flex-direction: column; gap: 16px;",
-            SubpageToolbar { title: "Accounts & keys", on_back: on_back.clone() }
+            SubpageToolbar { title: "Accounts & keys", on_back: on_back }
             p { class: "muted", style: "font-size: 12px;",
                 "The master wallet holds the only recovery phrase. Extra accounts are HD-derived with your wallet password. Exporting secrets shows them on screen — do that offline."
             }
@@ -318,7 +318,7 @@ pub fn use_import_export_coroutine() -> Coroutine<ImportExportCmd> {
                     continue;
                 }
 
-                let result: Result<(), WalletError> = (|| async {
+                let result: Result<(), WalletError> = async {
                     match cmd {
                         ImportExportCmd::ImportMnemonic { password, mnemonic } => {
                             if !password.trim().is_empty() {
@@ -371,7 +371,7 @@ pub fn use_import_export_coroutine() -> Coroutine<ImportExportCmd> {
                             Ok(())
                         }
                     }
-                })()
+                }
                 .await;
 
                 if let Err(e) = result {

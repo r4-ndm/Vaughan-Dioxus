@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-navigate-trusted-dapp"
+description = "Allow invoke('navigate_trusted_dapp') to change the main webview URL only to the same allowlisted domains as --url (Rust re-validates every call)."
+commands.allow = ["navigate_trusted_dapp"]

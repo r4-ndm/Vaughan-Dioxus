@@ -62,7 +62,7 @@ pub fn SendView(cmd_tx: Coroutine<SendCmd>, on_back: Callback<()>) -> Element {
 
     rsx! {
         div { style: "display: flex; flex-direction: column; gap: 16px;",
-            SubpageToolbar { title: "Send", on_back: on_back.clone() }
+            SubpageToolbar { title: "Send", on_back: on_back }
 
             div { class: "card-panel",
                 label { class: "field-label", "Recipient (0x…)" }

@@ -114,24 +114,31 @@ pub fn WalletApp() -> Element {
     let mut show_hardware_modal = use_signal(|| false);
 
     let finish_onboarding = use_callback({
-        let mut phase = phase.clone();
+        let mut phase = phase;
         move |_| phase.set(WalletPhase::Main)
     });
 
     let on_startup_unlocked = use_callback({
-        let mut phase = phase.clone();
+        let mut phase = phase;
         move |_| phase.set(WalletPhase::Main)
     });
 
     use_effect({
         let services = services.clone();
-        let mut phase = phase.clone();
+        let mut phase = phase;
         move || {
             let services = services.clone();
             spawn(async move {
                 if services.account_manager.has_master_wallet()
                     && services.session_password().await.is_some()
                 {
+                    let pw = services.session_password().await;
+                    crate::chain_bootstrap::reconcile_and_sync_wallet_state(
+                        services.wallet_state.as_ref(),
+                        services.account_manager.as_ref(),
+                        pw.as_deref(),
+                    )
+                    .await;
                     phase.set(WalletPhase::Main);
                 }
             });
@@ -142,7 +149,7 @@ pub fn WalletApp() -> Element {
     use_context_provider(|| services.wallet_state.clone());
 
     let balance = use_signal(|| None);
-    let balance_events = use_signal(|| Vec::<BalanceEvent>::new());
+    let balance_events = use_signal(Vec::<BalanceEvent>::new);
     use_context_provider(|| AppRuntime {
         balance,
         balance_events,
@@ -165,42 +172,36 @@ pub fn WalletApp() -> Element {
     let ie = use_import_export_coroutine();
 
     let on_navigate = use_callback({
-        let mut view = view.clone();
+        let mut view = view;
         move |next: AppView| *view.write() = next
     });
 
     let on_back = use_callback({
-        let mut view = view.clone();
+        let mut view = view;
         move |_| *view.write() = AppView::Dashboard
     });
 
-    let on_refresh = use_callback({
-        let dash = dash.clone();
-        move |_| dash.send(DashboardCmd::RefreshOnce)
-    });
+    let on_refresh = use_callback(move |_| dash.send(DashboardCmd::RefreshOnce));
 
     let on_hardware = use_callback({
-        let mut show_hardware_modal = show_hardware_modal.clone();
+        let mut show_hardware_modal = show_hardware_modal;
         move |_| show_hardware_modal.set(true)
     });
 
     let on_go_send = use_callback({
-        let mut view = view.clone();
+        let mut view = view;
         move |_| *view.write() = AppView::Send
     });
 
-    let header_account_addr = use_signal(|| String::new());
+    let header_account_addr = use_signal(String::new);
 
     use_effect({
         let services = services.clone();
-        let view = view.clone();
-        let phase = phase.clone();
-        let header_account_addr = header_account_addr.clone();
         move || {
             let _ = *view.read();
             let _ = *phase.read();
             let mgr = services.account_manager.clone();
-            let mut header_account_addr = header_account_addr.clone();
+            let mut header_account_addr = header_account_addr;
             spawn(async move {
                 let s = match mgr.active_account().await {
                     Some(a) => format!("{:?}", a.address),
@@ -217,9 +218,9 @@ pub fn WalletApp() -> Element {
     });
 
     let on_wallet_deleted = use_callback({
-        let mut phase = phase.clone();
-        let mut view = view.clone();
-        let mut header_account_addr = header_account_addr.clone();
+        let mut phase = phase;
+        let mut view = view;
+        let mut header_account_addr = header_account_addr;
         move |_| {
             phase.set(WalletPhase::Onboarding);
             *view.write() = AppView::Dashboard;
@@ -241,7 +242,8 @@ pub fn WalletApp() -> Element {
             div { class: "wallet-shell",
                 header { class: "wallet-logo-block",
                     h1 { class: "vaughan-logo-gradient", "VAUGHAN" }
-                    if !header_account_addr.read().is_empty() {
+                    // Tauri main view shows address inside dashboard; avoid duplicating on Home.
+                    if *view.read() != AppView::Dashboard && !header_account_addr.read().is_empty() {
                         div { class: "header-active-account",
                             ColoredAddressText { address: header_account_addr.read().clone() }
                         }
@@ -251,28 +253,28 @@ pub fn WalletApp() -> Element {
                 main { class: "content-stack",
                     match *view.read() {
                         AppView::Dashboard => rsx! {
-                            DashboardView { cmd_tx: dash, on_go_send: on_go_send.clone() }
+                            DashboardView { cmd_tx: dash, on_go_send: on_go_send }
                         },
-                        AppView::Send => rsx! { SendView { cmd_tx: send_co, on_back: on_back.clone() } },
-                        AppView::Receive => rsx! { ReceiveView { on_back: on_back.clone() } },
-                        AppView::History => rsx! { HistoryView { cmd_tx: hist, on_back: on_back.clone() } },
-                        AppView::Dapps => rsx! { DappsView { on_back: on_back.clone() } },
+                        AppView::Send => rsx! { SendView { cmd_tx: send_co, on_back: on_back } },
+                        AppView::Receive => rsx! { ReceiveView { on_back: on_back } },
+                        AppView::History => rsx! { HistoryView { cmd_tx: hist, on_back: on_back } },
+                        AppView::Dapps => rsx! { DappsView { on_back: on_back } },
                         AppView::Settings => rsx! {
                             SettingsView {
                                 cmd_tx: settings,
-                                on_back: on_back.clone(),
-                                on_wallet_deleted: on_wallet_deleted.clone(),
+                                on_back: on_back,
+                                on_wallet_deleted: on_wallet_deleted,
                             }
                         },
-                        AppView::ImportExport => rsx! { ImportExportView { cmd_tx: ie, on_back: on_back.clone() } },
+                        AppView::ImportExport => rsx! { ImportExportView { cmd_tx: ie, on_back: on_back } },
                     }
                 }
 
                 if show_bottom_dock(*view.read()) {
                     ActionDock {
-                        on_navigate: on_navigate.clone(),
-                        on_refresh: on_refresh.clone(),
-                        on_hardware: on_hardware.clone(),
+                        on_navigate: on_navigate,
+                        on_refresh: on_refresh,
+                        on_hardware: on_hardware,
                     }
                 }
             }

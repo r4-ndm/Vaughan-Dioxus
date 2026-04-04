@@ -301,6 +301,107 @@ html, body {
   font-weight: 700;
 }
 
+/* Tauri DApps page: centered column */
+.dapps-browser-shell {
+  max-width: 64rem;
+  margin: 0 auto;
+  width: 100%;
+  padding-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.dapps-selectors-row {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+}
+
+.dapps-selectors-row > div {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Custom URL bar (Tauri parity) */
+.dapp-url-bar-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.dapp-url-bar-form:focus-within {
+  border-color: rgba(226, 232, 240, 0.45);
+  box-shadow: 0 0 0 1px rgba(226, 232, 240, 0.12);
+}
+
+.dapp-url-bar-input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--foreground);
+  font-size: 13px;
+  font-family: inherit;
+  padding: 0 8px;
+}
+
+.dapp-url-bar-input::placeholder {
+  color: var(--muted-foreground);
+  opacity: 0.65;
+}
+
+.dapp-url-bar-plus {
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 8px;
+  background: rgba(226, 232, 240, 0.08);
+  color: var(--foreground);
+  cursor: pointer;
+  font-size: 20px;
+  font-weight: 600;
+  transition: background 0.15s;
+}
+
+.dapp-url-bar-plus:hover:not(:disabled) {
+  background: rgba(226, 232, 240, 0.14);
+}
+
+.dapp-url-bar-go {
+  flex-shrink: 0;
+  padding: 10px 16px;
+  border: none;
+  border-radius: 8px;
+  background: var(--primary);
+  color: var(--primary-foreground);
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.dapp-url-bar-go:hover:not(:disabled) {
+  opacity: 0.92;
+}
+
+.dapp-url-bar-go:disabled,
+.dapp-url-bar-plus:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 /* Primary CTA (onboarding, submit) */
 .btn-primary-solid {
   width: 100%;
@@ -553,22 +654,110 @@ html, body {
   font-size: 14px;
 }
 
-/* dApp grid card */
+/* dApp grid card (Tauri-style) */
 .dapp-card {
+  position: relative;
+  overflow: hidden;
   background: var(--card);
   border: 1px solid var(--border);
+  border-radius: 0;
   padding: 16px;
   cursor: pointer;
   transition: border-color 0.15s, box-shadow 0.15s;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  min-height: 140px;
+  min-height: 148px;
 }
 
 .dapp-card:hover {
-  border-color: rgba(226, 232, 240, 0.35);
+  border-color: rgba(226, 232, 240, 0.45);
   box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+}
+
+.dapp-card-icon-wrap {
+  width: 40px;
+  height: 40px;
+  padding: 4px;
+  border-radius: 8px;
+  background: rgba(226, 232, 240, 0.05);
+  border: 1px solid rgba(226, 232, 240, 0.12);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.dapp-card-icon-wrap img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.dapp-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.dapp-card-ext {
+  font-size: 14px;
+  color: var(--muted-foreground);
+  flex-shrink: 0;
+}
+
+.dapp-card:hover .dapp-card-ext {
+  color: var(--foreground);
+}
+
+.dapp-card-remove {
+  position: absolute;
+  top: 8px;
+  right: 36px;
+  padding: 6px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s, background 0.15s;
+  z-index: 2;
+}
+
+.dapp-card:hover .dapp-card-remove {
+  opacity: 1;
+}
+
+.dapp-card-remove:hover {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.12);
+}
+
+.dapp-card-cat {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--muted-foreground);
+  background: var(--secondary);
+  padding: 2px 6px;
+  border-radius: 2px;
+  max-width: 72px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dapp-card-host {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--muted-foreground);
+  max-width: 96px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
 }
 
 .dapp-grid {

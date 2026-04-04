@@ -7,7 +7,9 @@ use vaughan_core::chains::evm::utils::parse_address;
 use vaughan_core::chains::evm::EvmAdapter;
 use vaughan_core::chains::{ChainAdapter, ChainType};
 use vaughan_core::core::account::AccountManager;
-use vaughan_core::core::{Account, AccountId, AccountType, NetworkConfig, NetworkService, WalletState};
+use vaughan_core::core::{
+    Account, AccountId, AccountType, NetworkConfig, NetworkService, WalletState,
+};
 use vaughan_core::error::WalletError;
 
 /// Only used when there is no account in [`AccountManager`] yet (e.g. edge cases before onboarding completes).
@@ -57,29 +59,63 @@ pub async fn register_default_evm_adapter(
     wallet_state.set_locked(false).await;
 }
 
-/// If [`WalletState`] has no active account, copy the primary persisted account (or a safe fallback).
-pub async fn ensure_wallet_state_active_account(wallet_state: &WalletState, mgr: &AccountManager) {
-    if wallet_state.active_account().await.is_some() {
-        return;
-    }
+/// Copy **all** persisted accounts and the active id from [`AccountManager`] into [`WalletState`].
+///
+/// Call after unlock and whenever adapters register so balance/signing match `state.json`.
+pub async fn sync_wallet_state_with_account_manager(
+    wallet_state: &WalletState,
+    mgr: &AccountManager,
+) {
+    let mut accounts = mgr.list_accounts().await;
+    let active = mgr.active_account().await;
 
-    let from_manager = if let Some(a) = mgr.active_account().await {
-        Some(a)
-    } else {
-        mgr.list_accounts().await.into_iter().next()
-    };
-
-    if let Some(a) = from_manager {
-        wallet_state.add_account(a).await;
-    } else if let Ok(addr) = parse_address(EXPLORER_FALLBACK_ADDRESS) {
-        wallet_state
-            .add_account(Account {
+    if accounts.is_empty() {
+        if let Ok(addr) = parse_address(EXPLORER_FALLBACK_ADDRESS) {
+            let dummy = Account {
                 id: AccountId::new(),
                 name: "Example (add an account)".into(),
                 address: addr,
                 account_type: AccountType::Imported,
                 index: None,
-            })
-            .await;
+            };
+            accounts.push(dummy.clone());
+            wallet_state
+                .replace_accounts_and_active(accounts, Some(dummy))
+                .await;
+            return;
+        }
+    }
+
+    wallet_state
+        .replace_accounts_and_active(accounts, active)
+        .await;
+}
+
+/// When `session_password` is set, align `state.json` with the mnemonic and keyring (stale Tauri rows,
+/// orphaned imports), then mirror into [`WalletState`].
+pub async fn reconcile_and_sync_wallet_state(
+    wallet_state: &WalletState,
+    mgr: &AccountManager,
+    session_password: Option<&str>,
+) {
+    if let Some(pw) = session_password {
+        if let Err(e) = mgr.reconcile_persisted_accounts_with_seed(pw).await {
+            tracing::warn!(
+                target: "vaughan_gui",
+                "Account reconciliation failed (continuing): {}",
+                e
+            );
+        }
+    }
+    sync_wallet_state_with_account_manager(wallet_state, mgr).await;
+}
+
+/// Rebuild the default EVM adapter after [`NetworkService::set_active_network`].
+pub async fn refresh_evm_adapter_for_active_network(
+    wallet_state: &WalletState,
+    network_service: &NetworkService,
+) {
+    if let Ok(a) = evm_adapter_for_network_service(network_service).await {
+        register_default_evm_adapter(wallet_state, a).await;
     }
 }

@@ -15,6 +15,29 @@ pub enum HistoryCmd {
     Refresh,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AdapterNetworkKey {
+    id: String,
+    rpc_url: String,
+    chain_id: u64,
+}
+
+async fn current_network_key(services: &AppServices) -> AdapterNetworkKey {
+    if let Some(n) = services.network_service.active_network().await {
+        AdapterNetworkKey {
+            id: n.id,
+            rpc_url: n.rpc_url,
+            chain_id: n.chain_id,
+        }
+    } else {
+        AdapterNetworkKey {
+            id: "ethereum".into(),
+            rpc_url: String::new(),
+            chain_id: 1,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct HistoryRuntime {
     pub query: Signal<String>,
@@ -28,7 +51,7 @@ pub fn provide_history_runtime() -> HistoryRuntime {
         query: use_signal(|| "".into()),
         loading: use_signal(|| false),
         error: use_signal(|| None),
-        items: use_signal(|| Vec::new()),
+        items: use_signal(Vec::new),
     }
 }
 
@@ -68,14 +91,14 @@ pub fn HistoryView(cmd_tx: Coroutine<HistoryCmd>, on_back: Callback<()>) -> Elem
         .items
         .read()
         .iter()
+        .filter(|&t| matches_query(t, &q))
         .cloned()
-        .filter(|t| matches_query(t, &q))
         .collect();
 
     rsx! {
         div { style: "display: flex; flex-direction: column; gap: 16px;",
             div { class: "history-toolbar",
-                SubpageToolbar { title: "Transaction History", on_back: on_back.clone() }
+                SubpageToolbar { title: "Transaction History", on_back: on_back }
                 button {
                     class: "vaughan-btn",
                     style: "width: auto; min-width: 100px;",
@@ -162,7 +185,7 @@ pub fn use_history_coroutine() -> Coroutine<HistoryCmd> {
         let mut rt2 = rt.clone();
 
         async move {
-            let adapter: Arc<dyn ChainAdapter> =
+            let mut adapter: Arc<dyn ChainAdapter> =
                 match crate::chain_bootstrap::evm_adapter_for_network_service(
                     services.network_service.as_ref(),
                 )
@@ -180,13 +203,23 @@ pub fn use_history_coroutine() -> Coroutine<HistoryCmd> {
                         return;
                     }
                 };
+            let mut adapter_network_key = current_network_key(&services).await;
 
             crate::chain_bootstrap::register_default_evm_adapter(&wallet_state, adapter.clone())
                 .await;
+            let pw = services.session_password().await;
+            crate::chain_bootstrap::reconcile_and_sync_wallet_state(
+                &wallet_state,
+                services.account_manager.as_ref(),
+                pw.as_deref(),
+            )
+            .await;
 
             let history_svc = services.history_service.clone();
             let mut ticker = tokio::time::interval(Duration::from_secs(10));
+            let mut network_tick = tokio::time::interval(Duration::from_secs(2));
             let mut poll_status = false;
+            let mut refresh_requested = false;
 
             loop {
                 tokio::select! {
@@ -194,64 +227,27 @@ pub fn use_history_coroutine() -> Coroutine<HistoryCmd> {
                         let Some(cmd) = cmd else { break; };
                         match cmd {
                             HistoryCmd::Refresh => {
-                                rt2.loading.set(true);
-                                rt2.error.set(None);
-
-                                let address = crate::chain_bootstrap::primary_wallet_address_hex(
-                                    services.account_manager.as_ref(),
-                                )
-                                .await;
-
-                                let limit = 100u32;
-                                let history_h = history_svc.clone();
-                                let adapter_h = adapter.clone();
-                                let address_h = address.clone();
-                                let fetch_result = retry_async_transient(
-                                    move || {
-                                        let history_h = history_h.clone();
-                                        let adapter_h = adapter_h.clone();
-                                        let address_h = address_h.clone();
-                                        async move {
-                                            let (native, token) = tokio::join!(
-                                                history_h.get_transactions(
-                                                    adapter_h.as_ref(),
-                                                    address_h.as_str(),
-                                                    limit,
-                                                ),
-                                                history_h.get_token_transfers(
-                                                    adapter_h.as_ref(),
-                                                    address_h.as_str(),
-                                                    limit,
-                                                ),
-                                            );
-                                            match (native, token) {
-                                                (Ok(mut a), Ok(mut b)) => {
-                                                    a.append(&mut b);
-                                                    a.sort_by(|x, y| y.timestamp.cmp(&x.timestamp));
-                                                    Ok(a)
-                                                }
-                                                (Err(e), _) | (_, Err(e)) => Err(e),
-                                            }
-                                        }
-                                    },
-                                    4,
-                                    Duration::from_millis(400),
-                                )
-                                .await;
-
-                                match fetch_result {
-                                    Ok(a) => {
-                                        poll_status = a.iter().any(|t| {
-                                            matches!(t.status, vaughan_core::chains::TxStatus::Pending)
-                                        });
-                                        rt2.items.set(a);
-                                    }
-                                    Err(e) => {
-                                        rt2.error.set(Some(e.user_message()));
-                                    }
+                                refresh_requested = true;
+                            }
+                        }
+                    }
+                    _ = network_tick.tick() => {
+                        let key = current_network_key(&services).await;
+                        if key != adapter_network_key {
+                            match crate::chain_bootstrap::evm_adapter_for_network_service(
+                                services.network_service.as_ref(),
+                            )
+                            .await
+                            {
+                                Ok(next_adapter) => {
+                                    adapter = next_adapter;
+                                    adapter_network_key = key;
+                                    crate::chain_bootstrap::register_default_evm_adapter(&wallet_state, adapter.clone()).await;
+                                    refresh_requested = true;
                                 }
-
-                                rt2.loading.set(false);
+                                Err(e) => {
+                                    rt2.error.set(Some(e.user_message()));
+                                }
                             }
                         }
                     }
@@ -289,6 +285,67 @@ pub fn use_history_coroutine() -> Coroutine<HistoryCmd> {
                         }
 
                         poll_status = rt2.items.read().iter().any(|t| matches!(t.status, vaughan_core::chains::TxStatus::Pending));
+                    }
+                    _ = async {}, if refresh_requested => {
+                        refresh_requested = false;
+                        rt2.loading.set(true);
+                        rt2.error.set(None);
+
+                        let address = crate::chain_bootstrap::primary_wallet_address_hex(
+                            services.account_manager.as_ref(),
+                        )
+                        .await;
+
+                        let limit = 100u32;
+                        let history_h = history_svc.clone();
+                        let adapter_h = adapter.clone();
+                        let address_h = address.clone();
+                        let fetch_result = retry_async_transient(
+                            move || {
+                                let history_h = history_h.clone();
+                                let adapter_h = adapter_h.clone();
+                                let address_h = address_h.clone();
+                                async move {
+                                    let (native, token) = tokio::join!(
+                                        history_h.get_transactions(
+                                            adapter_h.as_ref(),
+                                            address_h.as_str(),
+                                            limit,
+                                        ),
+                                        history_h.get_token_transfers(
+                                            adapter_h.as_ref(),
+                                            address_h.as_str(),
+                                            limit,
+                                        ),
+                                    );
+                                    match (native, token) {
+                                        (Ok(mut a), Ok(mut b)) => {
+                                            a.append(&mut b);
+                                            a.sort_by(|x, y| y.timestamp.cmp(&x.timestamp));
+                                            Ok(a)
+                                        }
+                                        (Err(e), _) | (_, Err(e)) => Err(e),
+                                    }
+                                }
+                            },
+                            4,
+                            Duration::from_millis(400),
+                        )
+                        .await;
+
+                        match fetch_result {
+                            Ok(a) => {
+                                poll_status = a.iter().any(|t| {
+                                    matches!(t.status, vaughan_core::chains::TxStatus::Pending)
+                                });
+                                rt2.items.set(a);
+                            }
+                            Err(e) => {
+                                rt2.error.set(Some(e.user_message()));
+                            }
+                        }
+
+                        rt2.loading.set(false);
                     }
                 }
             }

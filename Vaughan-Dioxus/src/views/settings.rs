@@ -44,13 +44,13 @@ pub struct SettingsRuntime {
 
 pub fn provide_settings_runtime() -> SettingsRuntime {
     SettingsRuntime {
-        networks: use_signal(|| Vec::new()),
+        networks: use_signal(Vec::new),
         active_network: use_signal(|| None),
         health: use_signal(|| None),
         loading: use_signal(|| false),
         error: use_signal(|| None),
         sound_enabled: use_signal(|| false),
-        tokens: use_signal(|| Vec::new()),
+        tokens: use_signal(Vec::new),
         token_contract: use_signal(|| "".into()),
         token_symbol: use_signal(|| "".into()),
         token_name: use_signal(|| "".into()),
@@ -75,7 +75,7 @@ pub fn SettingsView(
 
     use_effect(move || {
         let ws = wallet_state.clone();
-        let mut locked = locked.clone();
+        let mut locked = locked;
         spawn(async move {
             locked.set(ws.is_locked().await);
         });
@@ -88,7 +88,7 @@ pub fn SettingsView(
 
     rsx! {
         div { style: "display: flex; flex-direction: column; gap: 16px;",
-            SubpageToolbar { title: "Settings", on_back: on_back.clone() }
+            SubpageToolbar { title: "Settings", on_back: on_back }
 
             if *rt.loading.read() {
                 p { class: "muted", "Loading…" }
@@ -280,8 +280,8 @@ pub fn SettingsView(
                             class: "vaughan-btn",
                             disabled: *wipe_busy.read(),
                             onclick: {
-                                let mut wipe_confirm_open = wipe_confirm_open.clone();
-                                let mut wipe_err = wipe_err.clone();
+                                let mut wipe_confirm_open = wipe_confirm_open;
+                                let mut wipe_err = wipe_err;
                                 move |_| {
                                     wipe_confirm_open.set(false);
                                     wipe_err.set(None);
@@ -294,18 +294,17 @@ pub fn SettingsView(
                             disabled: *wipe_busy.read(),
                             onclick: {
                                 let services = services.clone();
-                                let on_wallet_deleted = on_wallet_deleted.clone();
-                                let mut wipe_busy = wipe_busy.clone();
-                                let mut wipe_err = wipe_err.clone();
-                                let wipe_confirm_open = wipe_confirm_open.clone();
+                                let on_wallet_deleted = on_wallet_deleted;
+                                let mut wipe_busy = wipe_busy;
+                                let mut wipe_err = wipe_err;
                                 move |_| {
                                     wipe_err.set(None);
                                     wipe_busy.set(true);
                                     let s = services.clone();
-                                    let od = on_wallet_deleted.clone();
-                                    let mut wipe_busy = wipe_busy.clone();
-                                    let mut wipe_err = wipe_err.clone();
-                                    let mut wipe_confirm_open = wipe_confirm_open.clone();
+                                    let od = on_wallet_deleted;
+                                    let mut wipe_busy = wipe_busy;
+                                    let mut wipe_err = wipe_err;
+                                    let mut wipe_confirm_open = wipe_confirm_open;
                                     spawn(async move {
                                         match s.wipe_wallet().await {
                                             Ok(()) => od.call(()),
@@ -325,8 +324,8 @@ pub fn SettingsView(
                     button {
                         class: "btn-danger-outline",
                         onclick: {
-                            let mut wipe_confirm_open = wipe_confirm_open.clone();
-                            let mut wipe_err = wipe_err.clone();
+                            let mut wipe_confirm_open = wipe_confirm_open;
+                            let mut wipe_err = wipe_err;
                             move |_| {
                                 wipe_err.set(None);
                                 wipe_confirm_open.set(true);

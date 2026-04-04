@@ -1,11 +1,78 @@
-// Injected into every frame (main shell + cross-origin iframes) via Tauri
-// `initialization_script_for_all_frames`, so dApps like Uniswap see window.ethereum.
+// Injected into every frame (shell, allowlisted external top-level, cross-origin iframes)
+// via Tauri `initialization_script_for_all_frames`, so dApps see window.ethereum.
 //
-// Pattern aligned with Vaughan-Tauri (https://github.com/r4-ndm/Vaughan-Tauri):
-// wait until `__TAURI__.core.invoke` is ready before injecting — early return caused
-// silent no-provider bugs when the bridge was not initialized yet.
+// Bridge selection (topnav-3):
+// - Use direct `__TAURI__.core.invoke` / `invoke` in this frame when available (shell or WebviewUrl::External top).
+// - If this frame has no invoke and is nested, use postMessage to `window.top` (shell index.html listener or the
+//   relay below on allowlisted https / loopback top-level pages).
+// - Allowlisted top-level https / loopback installs a VAUGHAN_IPC relay (parity with index.html) for nested frames.
+//
+// Wait until invoke is ready before injecting — early return caused silent no-provider bugs.
 (function () {
   if (window.__VAUGHAN_ETH_INJECTED__) return;
+
+  /** Keep in sync with wallet `browser.rs` ALLOWED_HOST_SUFFIXES and `index.html` trustedWalletBridgeOrigin. */
+  var TRUSTED_HOST_SUFFIXES = [
+    "uniswap.org",
+    "uniswap.com",
+    "sushi.com",
+    "pancakeswap.finance",
+    "curve.fi",
+    "aave.com",
+    "compound.finance",
+    "1inch.com",
+    "opensea.io",
+    "stargate.finance",
+    "v4.testnet.pulsechain.com",
+    "pulsex.com",
+    "piteas.io",
+    "gopulse.com",
+    "internetmoney.io",
+    "provex.com",
+    "libertyswap.finance",
+    "0xcurv.win",
+    "pump.tires",
+    "9mm.pro",
+    "9inch.io",
+    "hyperliquid.xyz",
+    "asterdex.com",
+  ];
+
+  function isTrustedWalletPageOrigin(href) {
+    try {
+      var u = new URL(href);
+      var h = u.hostname.toLowerCase().replace(/\.$/, "");
+      if (u.protocol === "http:") {
+        return h === "localhost" || h === "127.0.0.1";
+      }
+      if (u.protocol !== "https:") return false;
+      for (var i = 0; i < TRUSTED_HOST_SUFFIXES.length; i++) {
+        var s = TRUSTED_HOST_SUFFIXES[i];
+        if (h === s || h.endsWith("." + s)) return true;
+      }
+      return false;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /**
+   * Shell document, the dApp iframe (direct child of shell), or a nested iframe on a
+   * trusted host. Cross-origin *child* frames on untrusted hosts are excluded by the
+   * hostname check above (ads, trackers). When parent is another trusted origin we
+   * cannot read (e.g. www.* embedding app.*), still inject — otherwise many dApps get
+   * no provider while Uniswap (single document under shell) works fine.
+   */
+  function shouldInstallBridgeProvider() {
+    if (!needsTopWindowBridge()) return true;
+    if (!isTrustedWalletPageOrigin(window.location.href)) return false;
+    try {
+      if (window.parent === window.top) return true;
+      return isTrustedWalletPageOrigin(window.parent.location.href);
+    } catch (e) {
+      return true;
+    }
+  }
 
   function getInvoke() {
     if (
@@ -36,7 +103,10 @@
     }
   }
 
-  /** Any non-top frame without invoke must reach the shell via postMessage (use top, not parent). */
+  /**
+   * True when this frame has no in-process invoke and must use postMessage to window.top
+   * (iframe under shell or under an allowlisted top document that runs the IPC relay).
+   */
   function needsTopWindowBridge() {
     if (getInvoke()) return false;
     try {
@@ -46,6 +116,10 @@
     }
   }
 
+  // Cross-origin nested frames must not install the bridge: the shell rejects their origin,
+  // which previously left IPC pending until a 120s timeout and slowed the whole tab.
+  if (!shouldInstallBridgeProvider()) return;
+
   function setup() {
     if (window.__VAUGHAN_ETH_INJECTED__) return;
     var invFn = getInvoke();
@@ -53,6 +127,88 @@
     if (!useParentBridge && !invFn) return;
 
     window.__VAUGHAN_ETH_INJECTED__ = true;
+
+    (function installTopDocumentIpcRelayIfNeeded() {
+      if (window.__VAUGHAN_TOP_IPC_RELAY__) return;
+      if (window !== window.top) return;
+      var relayTop = false;
+      try {
+        var proto = window.location.protocol;
+        if (proto === "https:" && isTrustedWalletPageOrigin(window.location.href)) {
+          relayTop = true;
+        } else if (proto === "http:") {
+          var hn = (window.location.hostname || "").toLowerCase();
+          if (hn === "localhost" || hn === "127.0.0.1") relayTop = true;
+        }
+      } catch (e) {
+        return;
+      }
+      if (!relayTop) return;
+      window.__VAUGHAN_TOP_IPC_RELAY__ = true;
+      window.addEventListener("message", function (e) {
+        if (!e.data || e.data.type !== "VAUGHAN_IPC") return;
+        if (!isTrustedWalletPageOrigin(e.origin + "/")) {
+          if (
+            e.data.cmd === "ipc_request" &&
+            e.source &&
+            e.source.postMessage &&
+            e.data.id != null
+          ) {
+            e.source.postMessage(
+              {
+                type: "VAUGHAN_IPC_RESPONSE",
+                id: e.data.id,
+                error: {
+                  message: "Origin not allowlisted for wallet bridge",
+                  code: 4901,
+                },
+              },
+              e.origin
+            );
+          }
+          return;
+        }
+        if (e.data.cmd !== "ipc_request") return;
+        var mid = e.data.id;
+        var margs = e.data.args;
+        var inv = getInvoke();
+        if (!e.source || !e.source.postMessage) return;
+        if (!inv) {
+          e.source.postMessage(
+            {
+              type: "VAUGHAN_IPC_RESPONSE",
+              id: mid,
+              error: {
+                message: "Tauri invoke not ready in top frame",
+                code: 4900,
+              },
+            },
+            e.origin
+          );
+          return;
+        }
+        inv("ipc_request", margs)
+          .then(function (result) {
+            e.source.postMessage(
+              { type: "VAUGHAN_IPC_RESPONSE", id: mid, result: result },
+              e.origin
+            );
+          })
+          .catch(function (err) {
+            e.source.postMessage(
+              {
+                type: "VAUGHAN_IPC_RESPONSE",
+                id: mid,
+                error: {
+                  message: String(err && err.message ? err.message : err),
+                  code: err && err.code,
+                },
+              },
+              e.origin
+            );
+          });
+      });
+    })();
 
   function makeEthRpcError(code, message, data) {
     var err = new Error(message);

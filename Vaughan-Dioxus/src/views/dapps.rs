@@ -1,20 +1,76 @@
-use dioxus::prelude::*;
+use std::sync::Arc;
+use std::time::Duration;
 
-use crate::browser::{self, TRUSTED_DAPP_ENTRIES};
+use dioxus::prelude::*;
+use keyboard_types::Key;
+use url::Url;
+
+use vaughan_core::core::WalletState;
+use vaughan_core::monitoring::BalanceEvent;
+
+use crate::app::AppRuntime;
+use crate::browser::{
+    self, format_user_dapp_url, google_favicon_url_for_dapp, trusted_dapp_visible_on_chain,
+    validate_whitelisted_dapp_url, TrustedDapp, TRUSTED_DAPP_ENTRIES,
+};
+use crate::chain_bootstrap::refresh_evm_adapter_for_active_network;
+use crate::components::{AccountOption, AccountSelector, NetworkOption, NetworkSelector};
 use crate::dapp_approval::{broker, PendingSignMessage, PendingSignTransaction};
 use crate::services::AppServices;
+
+#[derive(Clone, PartialEq, Eq)]
+struct CustomDappEntry {
+    name: String,
+    url: String,
+    description: String,
+}
+
+fn host_label(url: &str) -> String {
+    Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(|s| s.to_string()))
+        .unwrap_or_else(|| url.to_string())
+}
 
 #[component]
 pub fn DappsView(on_back: Callback<()>) -> Element {
     let services: AppServices = use_context();
+    let wallet_state: Arc<WalletState> = use_context();
+    let runtime: AppRuntime = use_context();
+
+    let networks = use_signal(Vec::<NetworkOption>::new);
+    let active_network_id = use_signal(|| None::<String>);
+    let active_chain_id = use_signal(|| 1u64);
+    let accounts = use_signal(Vec::<AccountOption>::new);
+    let active_account_address = use_signal(|| None::<String>);
+
     let no_accounts_for_dapps = use_signal(|| false);
+    let selectors_booted = use_signal(|| false);
+
+    let mut custom_url = use_signal(String::new);
+    let mut custom_dapps = use_signal(Vec::<CustomDappEntry>::new);
+    let mut hidden_core_urls = use_signal(Vec::<String>::new);
+    let mut url_bar_error = use_signal(|| None::<String>);
+    let mut launching_custom = use_signal(|| false);
+
+    let pending_message = use_signal(|| broker().pending_sign_message());
+    let pending_tx = use_signal(|| broker().pending_sign_transaction());
+    let mut dapp_open_error = use_signal(|| None::<String>);
+
+    let mut refresh = {
+        let mut pending_message = pending_message;
+        let mut pending_tx = pending_tx;
+        move || {
+            pending_message.set(broker().pending_sign_message());
+            pending_tx.set(broker().pending_sign_transaction());
+        }
+    };
 
     use_effect({
         let services = services.clone();
-        let no_accounts_for_dapps = no_accounts_for_dapps.clone();
         move || {
             let mgr = services.account_manager.clone();
-            let mut no_accounts_for_dapps = no_accounts_for_dapps.clone();
+            let mut no_accounts_for_dapps = no_accounts_for_dapps;
             spawn(async move {
                 let empty = mgr.list_accounts().await.is_empty();
                 no_accounts_for_dapps.set(empty);
@@ -22,21 +78,147 @@ pub fn DappsView(on_back: Callback<()>) -> Element {
         }
     });
 
-    let pending_message = use_signal(|| broker().pending_sign_message());
-    let pending_tx = use_signal(|| broker().pending_sign_transaction());
-    let dapp_open_error = use_signal(|| None::<String>);
-
-    let mut refresh = {
-        let mut pending_message = pending_message.clone();
-        let mut pending_tx = pending_tx.clone();
+    use_effect({
+        let services = services.clone();
+        let mut networks = networks;
+        let mut active_network_id = active_network_id;
+        let mut active_chain_id = active_chain_id;
+        let mut accounts = accounts;
+        let mut active_account_address = active_account_address;
+        let mut selectors_booted = selectors_booted;
         move || {
-            pending_message.set(broker().pending_sign_message());
-            pending_tx.set(broker().pending_sign_transaction());
+            if selectors_booted() {
+                return;
+            }
+            selectors_booted.set(true);
+            let services = services.clone();
+            spawn(async move {
+                loop {
+                    let nets = services
+                        .network_service
+                        .list_networks()
+                        .await
+                        .into_iter()
+                        .map(|n| NetworkOption {
+                            id: n.id,
+                            name: n.name,
+                            chain_id: n.chain_id,
+                        })
+                        .collect::<Vec<_>>();
+                    let active_net = services
+                        .network_service
+                        .active_network()
+                        .await
+                        .map(|n| n.id);
+                    let chain = services
+                        .network_service
+                        .active_network()
+                        .await
+                        .map(|n| n.chain_id)
+                        .unwrap_or(1);
+                    let accts = services
+                        .account_manager
+                        .list_accounts()
+                        .await
+                        .into_iter()
+                        .map(|a| AccountOption {
+                            name: a.name,
+                            address: format!("{:?}", a.address),
+                        })
+                        .collect::<Vec<_>>();
+                    let active_acct = services
+                        .account_manager
+                        .active_account()
+                        .await
+                        .map(|a| format!("{:?}", a.address));
+                    networks.set(nets);
+                    active_network_id.set(active_net);
+                    active_chain_id.set(chain);
+                    accounts.set(accts);
+                    active_account_address.set(active_acct);
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }
+            });
+        }
+    });
+
+    let on_network = {
+        let services = services.clone();
+        let wallet_state = wallet_state.clone();
+        let runtime = runtime.clone();
+        move |id: String| {
+            let services = services.clone();
+            let wallet_state = wallet_state.clone();
+            let mut runtime = runtime.clone();
+            spawn(async move {
+                if services
+                    .network_service
+                    .set_active_network(&id)
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+                refresh_evm_adapter_for_active_network(
+                    wallet_state.as_ref(),
+                    services.network_service.as_ref(),
+                )
+                .await;
+                if let Ok(b) = wallet_state.get_active_balance().await {
+                    runtime.balance.set(Some(b.clone()));
+                    runtime
+                        .balance_events
+                        .with_mut(|v: &mut Vec<BalanceEvent>| v.push(BalanceEvent { balance: b }));
+                }
+            });
         }
     };
 
+    let on_account = {
+        let services = services.clone();
+        let wallet_state = wallet_state.clone();
+        let runtime = runtime.clone();
+        move |address: String| {
+            let services = services.clone();
+            let wallet_state = wallet_state.clone();
+            let mut runtime = runtime.clone();
+            spawn(async move {
+                let acc = services
+                    .account_manager
+                    .list_accounts()
+                    .await
+                    .into_iter()
+                    .find(|a| format!("{:?}", a.address) == address);
+                let Some(acc) = acc else { return };
+                if services.account_manager.set_active(acc.id).await.is_err() {
+                    return;
+                }
+                if wallet_state.set_active_account_by_id(acc.id).await.is_err() {
+                    wallet_state.add_account(acc.clone()).await;
+                    let _ = wallet_state.set_active_account_by_id(acc.id).await;
+                }
+                if let Ok(b) = wallet_state.get_active_balance().await {
+                    runtime.balance.set(Some(b.clone()));
+                    runtime
+                        .balance_events
+                        .with_mut(|v: &mut Vec<BalanceEvent>| v.push(BalanceEvent { balance: b }));
+                }
+            });
+        }
+    };
+
+    let chain = active_chain_id();
+    let hidden = hidden_core_urls.read().clone();
+    let custom_list = custom_dapps.read().clone();
+
+    let core_filtered: Vec<&'static TrustedDapp> = TRUSTED_DAPP_ENTRIES
+        .iter()
+        .filter(|e| trusted_dapp_visible_on_chain(e, chain))
+        .filter(|e| !hidden.contains(&e.url.to_string()))
+        .collect();
+
     rsx! {
-        div { style: "display: flex; flex-direction: column; gap: 20px;",
+        div { class: "dapps-browser-shell",
             div { class: "dapps-header-wrap",
                 button {
                     class: "back-link dapps-back",
@@ -44,6 +226,31 @@ pub fn DappsView(on_back: Callback<()>) -> Element {
                     "←"
                 }
                 h1 { class: "dapps-title", "DApps Browser" }
+            }
+
+            div {
+                class: "dapps-selectors-row",
+                onclick: move |e| e.stop_propagation(),
+                div {
+                    NetworkSelector {
+                        networks: networks(),
+                        active_id: active_network_id(),
+                        on_select: {
+                            let on_network = on_network.clone();
+                            move |id| on_network(id)
+                        },
+                    }
+                }
+                div {
+                    AccountSelector {
+                        accounts: accounts(),
+                        active_address: active_account_address(),
+                        on_select: {
+                            let on_account = on_account.clone();
+                            move |addr| on_account(addr)
+                        },
+                    }
+                }
             }
 
             p { class: "muted", style: "margin: 0; font-size: 13px; text-align: center;",
@@ -54,33 +261,118 @@ pub fn DappsView(on_back: Callback<()>) -> Element {
                 p {
                     class: "muted",
                     style: "margin: 0; padding: 10px 12px; font-size: 13px; text-align: center; border: 1px solid var(--border); background: var(--card); color: var(--error-text);",
-                    "No accounts in this wallet yet. Use Create or Import in the dock, then connect in Uniswap — eth_requestAccounts only returns addresses from those accounts."
+                    "No accounts in this wallet yet. Use Create or Import in the dock, then connect in the dApp."
                 }
             }
 
             div { class: "dapp-grid",
-                for (label, url) in TRUSTED_DAPP_ENTRIES.iter() {
-                    div {
-                        key: "{url}",
-                        class: "dapp-card",
-                        onclick: {
-                            let mut err_sig = dapp_open_error.clone();
-                            let url = (*url).to_string();
-                            move |_| {
-                                match browser::open_trusted_dapp_url(&url) {
-                                    Ok(()) => err_sig.set(None),
-                                    Err(e) => err_sig.set(Some(e)),
+                for d in custom_list.iter() {
+                    {
+                        let d = d.clone();
+                        let fav = google_favicon_url_for_dapp(&d.url).unwrap_or_default();
+                        let host = host_label(&d.url);
+                        rsx! {
+                            div {
+                                key: "{d.url}",
+                                class: "dapp-card",
+                                onclick: {
+                                    let mut err_sig = dapp_open_error;
+                                    let u = d.url.clone();
+                                    move |_| {
+                                        match browser::open_trusted_dapp_url(&u) {
+                                            Ok(()) => err_sig.set(None),
+                                            Err(e) => err_sig.set(Some(e)),
+                                        }
+                                    }
+                                },
+                                button {
+                                    class: "dapp-card-remove",
+                                    title: "Remove from your list",
+                                    onclick: move |e| {
+                                        e.stop_propagation();
+                                        let u = d.url.clone();
+                                        custom_dapps.with_mut(|v| v.retain(|x| x.url != u));
+                                    },
+                                    "🗑"
+                                }
+                                div {
+                                    div { class: "dapp-card-head",
+                                        div { class: "dapp-card-icon-wrap",
+                                            img { src: "{fav}", alt: "{d.name}" }
+                                        }
+                                        span { class: "dapp-card-ext", "↗" }
+                                    }
+                                    div {
+                                        h3 { style: "margin: 8px 0 4px 0; font-size: 15px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-right: 28px;",
+                                            "{d.name}"
+                                        }
+                                        p { class: "muted", style: "margin: 0; font-size: 11px; line-height: 1.35; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;",
+                                            "{d.description}"
+                                        }
+                                    }
+                                    div { style: "margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; gap: 8px;",
+                                        span { class: "dapp-card-cat", "Custom" }
+                                        span { class: "dapp-card-host", "{host}" }
+                                    }
                                 }
                             }
-                        },
-                        div {
-                            h3 { style: "margin: 0 0 6px 0; font-size: 15px; font-weight: 700;", "{label}" }
-                            p { class: "muted", style: "margin: 0; font-size: 11px; line-height: 1.35; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;",
-                                "{url}"
-                            }
                         }
-                        div { style: "margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); font-size: 10px; font-weight: 600; color: var(--muted-foreground);",
-                            "Trusted"
+                    }
+                }
+                for entry in core_filtered.iter() {
+                    {
+                        let entry = *entry;
+                        let fav = google_favicon_url_for_dapp(entry.url).unwrap_or_default();
+                        let host = host_label(entry.url);
+                        rsx! {
+                            div {
+                                key: "{entry.url}",
+                                class: "dapp-card",
+                                onclick: {
+                                    let mut err_sig = dapp_open_error;
+                                    let u = entry.url.to_string();
+                                    move |_| {
+                                        match browser::open_trusted_dapp_url(&u) {
+                                            Ok(()) => err_sig.set(None),
+                                            Err(e) => err_sig.set(Some(e)),
+                                        }
+                                    }
+                                },
+                                button {
+                                    class: "dapp-card-remove",
+                                    title: "Hide from list",
+                                    onclick: move |e| {
+                                        e.stop_propagation();
+                                        let u = entry.url.to_string();
+                                        hidden_core_urls.with_mut(|v| {
+                                            if !v.contains(&u) {
+                                                v.push(u);
+                                            }
+                                        });
+                                    },
+                                    "🗑"
+                                }
+                                div {
+                                    div { class: "dapp-card-head",
+                                        div { class: "dapp-card-icon-wrap",
+                                            img { src: "{fav}", alt: "{entry.name}" }
+                                        }
+                                        span { class: "dapp-card-ext", "↗" }
+                                    }
+                                    div {
+                                        h3 { style: "margin: 8px 0 4px 0; font-size: 15px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-right: 28px;",
+                                            "{entry.name}"
+                                        }
+                                        p { class: "muted", style: "margin: 0; font-size: 11px; line-height: 1.35; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;",
+                                            "{entry.description}"
+                                        }
+                                    }
+                                    div { style: "margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; gap: 8px;",
+                                        span { class: "dapp-card-cat", "{entry.category}" }
+                                        span { class: "dapp-card-host", "{host}" }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -92,6 +384,104 @@ pub fn DappsView(on_back: Callback<()>) -> Element {
                     style: "margin: 0; font-size: 12px; color: var(--error-text); white-space: pre-wrap; text-align: center;",
                     "{msg}"
                 }
+            }
+
+            div { class: "dapp-url-bar-form",
+                button {
+                    r#type: "button",
+                    class: "dapp-url-bar-plus",
+                    disabled: custom_url.read().trim().is_empty() || *launching_custom.read(),
+                    title: "Add URL to your custom dApps list (must be on the trusted list)",
+                    onclick: move |_| {
+                        let raw = custom_url.read().clone();
+                        if raw.trim().is_empty() {
+                            return;
+                        }
+                        let formatted = format_user_dapp_url(&raw);
+                        match validate_whitelisted_dapp_url(&formatted) {
+                            Ok(normalized) => {
+                                let dup_core = TRUSTED_DAPP_ENTRIES.iter().any(|e| e.url == normalized);
+                                let dup_custom = custom_dapps.read().iter().any(|c| c.url == normalized);
+                                if dup_core || dup_custom {
+                                    url_bar_error.set(Some("This dApp is already in your list.".into()));
+                                    return;
+                                }
+                                let name = host_label(&normalized);
+                                custom_dapps.with_mut(|v| {
+                                    v.push(CustomDappEntry {
+                                        name,
+                                        url: normalized.clone(),
+                                        description: "Custom user-added dApp".into(),
+                                    });
+                                });
+                                url_bar_error.set(None);
+                                custom_url.set(String::new());
+                            }
+                            Err(e) => url_bar_error.set(Some(e)),
+                        }
+                    },
+                    "+"
+                }
+                input {
+                    class: "dapp-url-bar-input",
+                    r#type: "text",
+                    placeholder: "Type a URL — + to add to this list, Go to open in browser",
+                    value: "{custom_url.read()}",
+                    disabled: *launching_custom.read(),
+                    oninput: move |e| {
+                        *custom_url.write() = e.value();
+                        url_bar_error.set(None);
+                    },
+                    onkeydown: move |e: Event<KeyboardData>| {
+                        if e.key() == Key::Enter && !custom_url.read().trim().is_empty() && !*launching_custom.read() {
+                            let raw = custom_url.read().clone();
+                            let formatted = format_user_dapp_url(&raw);
+                            launching_custom.set(true);
+                            url_bar_error.set(None);
+                            match validate_whitelisted_dapp_url(&formatted) {
+                                Ok(normalized) => {
+                                    match browser::open_trusted_dapp_url(&normalized) {
+                                        Ok(()) => {
+                                            dapp_open_error.set(None);
+                                        }
+                                        Err(err) => dapp_open_error.set(Some(err)),
+                                    }
+                                }
+                                Err(err) => url_bar_error.set(Some(err)),
+                            }
+                            launching_custom.set(false);
+                        }
+                    },
+                }
+                button {
+                    r#type: "button",
+                    class: "dapp-url-bar-go",
+                    disabled: custom_url.read().trim().is_empty() || *launching_custom.read(),
+                    onclick: move |_| {
+                        let raw = custom_url.read().clone();
+                        if raw.trim().is_empty() {
+                            return;
+                        }
+                        let formatted = format_user_dapp_url(&raw);
+                        launching_custom.set(true);
+                        url_bar_error.set(None);
+                        match validate_whitelisted_dapp_url(&formatted) {
+                            Ok(normalized) => {
+                                match browser::open_trusted_dapp_url(&normalized) {
+                                    Ok(()) => dapp_open_error.set(None),
+                                    Err(err) => dapp_open_error.set(Some(err)),
+                                }
+                            }
+                            Err(err) => url_bar_error.set(Some(err)),
+                        }
+                        launching_custom.set(false);
+                    },
+                    if *launching_custom.read() { "…" } else { "Go" }
+                }
+            }
+
+            if let Some(err) = url_bar_error.read().as_ref() {
+                p { style: "margin: -12px 0 0 0; font-size: 12px; color: var(--error-text); text-align: center;", "{err}" }
             }
 
             div { class: "btn-row",

@@ -28,20 +28,20 @@ pub fn OnboardingView(on_complete: Callback<()>) -> Element {
     let services: AppServices = use_context();
 
     let mut phase = use_signal(|| Phase::Pick);
-    let mut password = use_signal(|| String::new());
-    let mut password2 = use_signal(|| String::new());
-    let mut generated_mnemonic = use_signal(|| String::new());
-    let mut restore_mnemonic = use_signal(|| String::new());
+    let mut password = use_signal(String::new);
+    let mut password2 = use_signal(String::new);
+    let mut generated_mnemonic = use_signal(String::new);
+    let mut restore_mnemonic = use_signal(String::new);
     let mut backed_up = use_signal(|| false);
     let busy = use_signal(|| false);
     let mut error = use_signal(|| None::<String>);
 
-    let on_done = on_complete.clone();
-    let mut busy_c = busy.clone();
-    let mut error_c = error.clone();
+    let on_done = on_complete;
+    let mut busy_c = busy;
+    let mut error_c = error;
     let cmd_tx = use_coroutine(move |mut rx: UnboundedReceiver<OnboardingCmd>| {
         let services = services.clone();
-        let on_done = on_done.clone();
+        let on_done = on_done;
         async move {
             while let Some(cmd) = rx.next().await {
                 busy_c.set(true);
@@ -75,7 +75,16 @@ pub fn OnboardingView(on_complete: Callback<()>) -> Element {
 
                 busy_c.set(false);
                 match result {
-                    Ok(()) => on_done.call(()),
+                    Ok(()) => {
+                        let pw = services.session_password().await;
+                        crate::chain_bootstrap::reconcile_and_sync_wallet_state(
+                            services.wallet_state.as_ref(),
+                            services.account_manager.as_ref(),
+                            pw.as_deref(),
+                        )
+                        .await;
+                        on_done.call(());
+                    }
                     Err(WalletError::InvalidPassword) => {
                         error_c.set(Some(PASSWORD_POLICY_DESCRIPTION.into()));
                     }
@@ -175,7 +184,7 @@ pub fn OnboardingView(on_complete: Callback<()>) -> Element {
                                             error.set(Some("Passwords do not match.".into()));
                                             return;
                                         }
-                                        if let Err(_) = validate_password(password.read().as_str()) {
+                                        if validate_password(password.read().as_str()).is_err() {
                                             error.set(Some(PASSWORD_POLICY_DESCRIPTION.into()));
                                             return;
                                         }
@@ -280,7 +289,7 @@ pub fn OnboardingView(on_complete: Callback<()>) -> Element {
                                             error.set(Some("Passwords do not match.".into()));
                                             return;
                                         }
-                                        if let Err(_) = validate_password(password.read().as_str()) {
+                                        if validate_password(password.read().as_str()).is_err() {
                                             error.set(Some(PASSWORD_POLICY_DESCRIPTION.into()));
                                             return;
                                         }

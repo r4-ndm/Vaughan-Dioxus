@@ -26,16 +26,16 @@ fn is_wrong_password_probe(e: &WalletError) -> bool {
 #[component]
 pub fn StartupUnlockView(on_unlocked: Callback<()>) -> Element {
     let services: AppServices = use_context();
-    let mut password = use_signal(|| String::new());
+    let mut password = use_signal(String::new);
     let error = use_signal(|| None::<String>);
     let busy = use_signal(|| false);
 
-    let on_done = on_unlocked.clone();
-    let mut busy_c = busy.clone();
-    let mut error_c = error.clone();
+    let on_done = on_unlocked;
+    let mut busy_c = busy;
+    let mut error_c = error;
     let cmd_tx = use_coroutine(move |mut rx: UnboundedReceiver<UnlockCmd>| {
         let services = services.clone();
-        let on_done = on_done.clone();
+        let on_done = on_done;
         async move {
             while let Some(cmd) = rx.next().await {
                 let UnlockCmd::Try { password: pw } = cmd;
@@ -70,7 +70,13 @@ pub fn StartupUnlockView(on_unlocked: Callback<()>) -> Element {
                             .password_attempt_limiter
                             .register_success(STARTUP_UNLOCK_KEY)
                             .await;
-                        services.set_session_password(pw).await;
+                        services.set_session_password(pw.clone()).await;
+                        crate::chain_bootstrap::reconcile_and_sync_wallet_state(
+                            services.wallet_state.as_ref(),
+                            services.account_manager.as_ref(),
+                            Some(pw.as_str()),
+                        )
+                        .await;
                         on_done.call(());
                     }
                     Err(e) => {

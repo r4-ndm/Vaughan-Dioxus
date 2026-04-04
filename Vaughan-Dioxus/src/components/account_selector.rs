@@ -1,24 +1,30 @@
 use dioxus::prelude::*;
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct NetworkOption {
-    pub id: String,
+pub struct AccountOption {
     pub name: String,
-    pub chain_id: u64,
+    pub address: String,
+}
+
+fn short_addr(a: &str) -> String {
+    if a.len() < 14 {
+        return a.to_string();
+    }
+    format!("{}...{}", &a[..8], &a[a.len() - 4..])
 }
 
 #[component]
-pub fn NetworkSelector(
-    networks: Vec<NetworkOption>,
-    active_id: Option<String>,
+pub fn AccountSelector(
+    accounts: Vec<AccountOption>,
+    active_address: Option<String>,
     on_select: Callback<String>,
 ) -> Element {
     let mut is_open = use_signal(|| false);
-    let current_label = networks
+    let current_label = accounts
         .iter()
-        .find(|n| active_id.as_deref() == Some(n.id.as_str()))
-        .map(|n| n.name.clone())
-        .unwrap_or_else(|| "Select network".into());
+        .find(|a| active_address.as_deref() == Some(a.address.as_str()))
+        .map(|a| a.name.clone())
+        .unwrap_or_else(|| "Select account".into());
 
     rsx! {
         div { style: "position: relative; width: 100%;",
@@ -33,23 +39,23 @@ pub fn NetworkSelector(
             if is_open() {
                 div {
                     style: "position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 60; border: 1px solid var(--border); background: var(--card);",
-                    for net in networks {
+                    for acc in accounts {
                         button {
-                            key: "{net.id}",
+                            key: "{acc.address}",
                             r#type: "button",
                             style: "width: 100%; padding: 10px 12px; border-bottom: 1px solid var(--border); background: transparent; color: var(--fg); text-align: left; display: flex; justify-content: space-between; align-items: center; cursor: pointer;",
                             onclick: {
-                                let id = net.id.clone();
+                                let address = acc.address.clone();
                                 move |_| {
-                                    on_select.call(id.clone());
+                                    on_select.call(address.clone());
                                     is_open.set(false);
                                 }
                             },
-                            span { "{net.name}" }
-                            if active_id.as_deref() == Some(net.id.as_str()) {
+                            span { "{acc.name}" }
+                            if active_address.as_deref() == Some(acc.address.as_str()) {
                                 span { style: "color: #22c55e; font-size: 12px;", "●" }
                             } else {
-                                span { class: "muted", style: "font-size: 11px;", "{net.chain_id}" }
+                                span { class: "muted", style: "font-family: var(--font-mono); font-size: 11px;", "{short_addr(&acc.address)}" }
                             }
                         }
                     }

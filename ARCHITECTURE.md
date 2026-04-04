@@ -83,6 +83,21 @@ All Dioxus-side async flows ultimately delegate to `vaughan-core` services and c
 - Uses `vaughan-ipc-types` to send provider-like requests to the Dioxus wallet process and receive responses (connect, sign, send, etc.).
 - Never stores keys itself; only forwards RPC-style messages.
 
+### Dual navigation modes (top-level URL)
+
+The main webview uses one of two modes, chosen from `--url` using the **same host allowlist** as the wallet (`Vaughan-Dioxus/src/browser.rs` `validate_whitelisted_dapp_url` / `ALLOWED_HOST_SUFFIXES`, mirrored in `lib.rs` and `provider_inject.js`). At runtime, **`navigate_trusted_dapp`** applies that same validation and calls `WebviewWindow::navigate` on `main`, so the shell or a trusted top-level page can switch to another allowlisted URL without respawning the process; capabilities mirror `remote.urls` plus local shell access, and Rust still rejects anything off-list.
+
+| Mode | When | Main document | Chrome |
+|------|------|---------------|--------|
+| **External top-level** | `--url` is allowlisted `https://…` or loopback `http://` | `WebviewUrl::External` — dApp is the top document | Native **Navigation** menu: Back / Forward / Reload (shortcuts); no `index.html` iframe shell |
+| **Shell** | No `--url`, empty `--url`, or non-allowlisted URL | `WebviewUrl::App("index.html")` — header, address bar, `#webview` iframe | In-page toolbar; Rust may set `__VAUGHAN_PENDING_INITIAL_URL` to open the iframe |
+
+**Provider bridge:** `provider_inject.js` uses direct `__TAURI__.invoke` when available; nested cross-origin frames `postMessage` to `window.top` (shell `index.html` listener or, on external top-level, a `VAUGHAN_IPC` relay injected on allowlisted top documents). See `doc/TOPNAV-SPIKE.md` for the optional `spike_ping` / `VAUGHAN_SPIKE_EXTERNAL=1` probe.
+
+**Wallet spawn:** The Dioxus wallet sets `VAUGHAN_WALLET_SPAWNED=1`, uses **piped stdin** for control, and usually starts a **warm** hidden shell at wallet startup (`VAUGHAN_WALLET_WARM_SHELL=1`, no `--url`). Opening a dApp sends `{"navigate_trusted":"<url>"}` on stdin (allowlist enforced in the browser); if that fails, the wallet respawns with `--url`. A monitor thread respawns after unexpected child exit using `last_url`. `VAUGHAN_NO_WARM_DAPP_BROWSER=1` disables warm spawn.
+
+**Automated checks:** `cargo test -p vaughan-tauri-browser topnav_url_tests` asserts Uniswap / Aave / Sushi-style URLs resolve to external top-level and non-listed hosts to shell mode.
+
 ## IPC and Process Boundaries
 
 - **Wallet process (Dioxus)**
