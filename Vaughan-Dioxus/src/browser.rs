@@ -6,9 +6,15 @@
 //! `VAUGHAN_WALLET_WARM_SHELL=1` so the window stays hidden until the first trusted dApp is opened.
 //! Opening a dApp sends a JSON line on stdin: `{"navigate_trusted":"<url>"}` (same allowlist as `--url`).
 //! If the warm process is gone or the pipe fails, the wallet falls back to a full respawn with `--url`.
-//! The monitor thread respawns after an unexpected child exit using [`BrowserInner::last_url`]; a **successful**
-//! exit clears `last_url` so we do not relaunch. Set `VAUGHAN_NO_WARM_DAPP_BROWSER=1` on the wallet process to skip
-//! warm spawn at startup.
+//!
+//! ## Window lifecycle (hide-on-close)
+//! The browser intercepts `CloseRequested` and **hides** the window instead of exiting. The process
+//! stays alive with the stdin thread still running, so the next `{"navigate_trusted":...}` immediately
+//! navigates, shows, and focuses the window — no cold start at all after the first launch. The wallet
+//! kills the process on shutdown via `BrowserProcessGuard::drop`.
+//!
+//! The monitor thread respawns after an unexpected crash exit using [`BrowserInner::last_url`].
+//! Set `VAUGHAN_NO_WARM_DAPP_BROWSER=1` on the wallet process to skip warm spawn entirely.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -24,6 +30,12 @@ pub use vaughan_trusted_hosts::hostname_is_whitelisted;
 
 use crate::services::AppServices;
 use crate::wallet_ipc::WalletIpcServer;
+
+fn warm_dapp_browser_env_enabled() -> bool {
+    std::env::var("VAUGHAN_NO_WARM_DAPP_BROWSER")
+        .map(|v| v != "1")
+        .unwrap_or(true)
+}
 
 /// IPC endpoint + token for spawning the dApp browser (also used for lazy launch if the binary was missing at startup).
 struct DappBoot {
@@ -272,13 +284,30 @@ struct BrowserInner {
 }
 
 impl BrowserInner {
+    /// Check whether the tracked browser child is still running. Reaps exited children so we don't
+    /// hold a waited-on `Child` handle. Does **not** spawn a replacement — that is the monitor
+    /// thread's job so the new process has time to initialise before the next dApp click.
     fn child_is_alive(&mut self) -> bool {
-        let Some(c) = &mut self.child else {
+        let Some(mut c) = self.child.take() else {
             return false;
         };
         match c.try_wait() {
-            Ok(None) => true,
-            Ok(Some(_)) | Err(_) => false,
+            Ok(None) => {
+                self.child = Some(c);
+                true
+            }
+            Ok(Some(status)) => {
+                self.control_stdin = None;
+                if status.success() {
+                    self.last_url = None;
+                }
+                false
+            }
+            Err(_) => {
+                self.control_stdin = None;
+                self.child = Some(c);
+                true
+            }
         }
     }
 
@@ -396,8 +425,10 @@ pub fn open_trusted_dapp_url(url_str: &str) -> Result<(), String> {
     let state = BROWSER_STATE
         .get()
         .ok_or_else(|| "dApp browser state unavailable".to_string())?;
+
     let mut inner = state.lock().map_err(|e| e.to_string())?;
     inner.bin = bin;
+
     if inner.child_is_alive() {
         if inner.try_send_navigate_trusted(&full).is_ok() {
             inner.last_url = Some(full);
@@ -405,6 +436,7 @@ pub fn open_trusted_dapp_url(url_str: &str) -> Result<(), String> {
         }
         tracing::warn!(target: "vaughan_browser", "dApp browser control pipe failed; respawning with --url");
     }
+
     inner.spawn(Some(&full))?;
     Ok(())
 }
@@ -447,10 +479,7 @@ impl BrowserProcessGuard {
         }
 
         if ipc_server.is_some() {
-            let skip_warm = std::env::var("VAUGHAN_NO_WARM_DAPP_BROWSER")
-                .map(|v| v == "1")
-                .unwrap_or(false);
-            if !skip_warm {
+            if warm_dapp_browser_env_enabled() {
                 if let Some(bin) = browser_bin {
                     if BROWSER_STATE.get().is_none() {
                         let _ = BROWSER_STATE.set(Arc::new(Mutex::new(BrowserInner {
@@ -486,7 +515,8 @@ impl BrowserProcessGuard {
             .name("vaughan-browser-monitor".into())
             .spawn(move || {
                 while !stop_for_monitor.load(Ordering::SeqCst) {
-                    thread::sleep(Duration::from_secs(2));
+                    // Short interval so a warm shell is ready quickly after the user closes a dApp.
+                    thread::sleep(Duration::from_millis(500));
                     if stop_for_monitor.load(Ordering::SeqCst) {
                         break;
                     }
@@ -502,12 +532,18 @@ impl BrowserProcessGuard {
                                 inner.control_stdin = None;
                                 if status.success() {
                                     inner.last_url = None;
+                                    if warm_dapp_browser_env_enabled() && inner.bin.exists() {
+                                        let _ = inner.spawn(None);
+                                    }
                                 }
                             }
                             Ok(None) => {
                                 inner.child = Some(c);
                             }
-                            Err(_) => {}
+                            Err(_) => {
+                                // Keep tracking the child if `try_wait` failed transiently.
+                                inner.child = Some(c);
+                            }
                         }
                     }
                     if inner.child.is_none() {

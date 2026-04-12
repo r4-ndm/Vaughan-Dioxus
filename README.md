@@ -4,15 +4,16 @@ Desktop wallet (**Dioxus**) and separate **Tauri** dApp browser, sharing **`vaug
 
 ## Quick start
 
+From the **repository root**, build the dApp browser and wallet, then launch the wallet (the browser binary must exist next to the wallet or under `target/debug` for trusted dApps):
+
 ```bash
-cargo build -p vaughan-tauri-browser
-cargo run -p vaughan-dioxus
+cargo build -p vaughan-tauri-browser && cargo build -p vaughan-dioxus && cargo run -p vaughan-dioxus
 ```
 
-Release-style check:
+Release build and run:
 
 ```bash
-cargo build --release -p vaughan-tauri-browser && cargo run --release -p vaughan-dioxus
+cargo build --release -p vaughan-tauri-browser && cargo build --release -p vaughan-dioxus && cargo run --release -p vaughan-dioxus
 ```
 
 ## Layout

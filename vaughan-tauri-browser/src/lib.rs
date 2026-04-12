@@ -238,6 +238,8 @@ pub fn run() {
     let wallet_warm_shell = std::env::var("VAUGHAN_WALLET_WARM_SHELL")
         .map(|v| v == "1")
         .unwrap_or(false);
+    // Wallet-spawned browsers: keep the OS process alive when the user closes the window.
+    let intercept_wallet_close = wallet_spawned || wallet_warm_shell;
     let use_trusted_chrome = external_top_level || wallet_spawned;
 
     eprintln!(
@@ -482,8 +484,31 @@ pub fn run() {
             }
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error building tauri application")
+        .run(move |app, event| {
+            // `CloseRequested` is not delivered through `WebviewWindow::on_window_event` on this path;
+            // handle it from `RunEvent` so `prevent_close()` runs before Wry decides to tear the window down.
+            // Defer `hide()` to the next main-loop turn: calling GTK hide synchronously inside the close
+            // handler has caused heap corruption on Linux (glibc "corrupted double-linked list").
+            if !intercept_wallet_close {
+                return;
+            }
+            if let tauri::RunEvent::WindowEvent { label, event, .. } = event {
+                if label != "main" {
+                    return;
+                }
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let handle = app.clone();
+                    let _ = app.run_on_main_thread(move || {
+                        if let Some(w) = handle.get_webview_window("main") {
+                            let _ = w.hide();
+                        }
+                    });
+                }
+            }
+        });
 }
 
 /// Navigates the **main** webview to `url` only if it passes [`parse_allowlisted_navigation_url`].
