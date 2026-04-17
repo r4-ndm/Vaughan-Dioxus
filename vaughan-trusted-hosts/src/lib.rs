@@ -19,6 +19,8 @@ pub const ALLOWED_HTTPS_HOST_SUFFIXES: &[&str] = &[
     "stargate.finance",
     "v4.testnet.pulsechain.com",
     "pulsex.com",
+    // PulseX static / worker chunks (IPFS gateway) used alongside `*.pulsex.com`.
+    "pulsex.mypinata.cloud",
     "piteas.io",
     "gopulse.com",
     "internetmoney.io",

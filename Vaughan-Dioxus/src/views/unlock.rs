@@ -16,6 +16,23 @@ enum UnlockCmd {
     Try { password: String },
 }
 
+fn dev_unlock_bypass_password() -> Option<String> {
+    // Dev/testing convenience: set this env var when launching the wallet.
+    // In release builds, additionally require explicit opt-in.
+    let pw = std::env::var("VAUGHAN_DEV_UNLOCK_PASSWORD").ok()?;
+    #[cfg(debug_assertions)]
+    {
+        Some(pw)
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let enabled = std::env::var("VAUGHAN_ENABLE_DEV_BYPASS")
+            .map(|v| v == "1")
+            .unwrap_or(false);
+        if enabled { Some(pw) } else { None }
+    }
+}
+
 fn is_wrong_password_probe(e: &WalletError) -> bool {
     matches!(
         e,
@@ -146,6 +163,15 @@ pub fn StartupUnlockView(on_unlocked: Callback<()>) -> Element {
                         disabled: *busy.read() || password.read().is_empty(),
                         onclick: move |_| try_unlock(),
                         "Unlock"
+                    }
+                    if let Some(dev_pw) = dev_unlock_bypass_password() {
+                        button {
+                            class: "btn-secondary-solid",
+                            disabled: *busy.read(),
+                            title: "Dev-only bypass using VAUGHAN_DEV_UNLOCK_PASSWORD",
+                            onclick: move |_| cmd_tx.send(UnlockCmd::Try { password: dev_pw.clone() }),
+                            "Bypass (dev)"
+                        }
                     }
                 }
             }

@@ -397,6 +397,10 @@ pub fn use_dashboard_coroutine() -> Coroutine<DashboardCmd> {
                                 if services.network_service.set_active_network(&id).await.is_err() {
                                     continue;
                                 }
+                                let _ = services
+                                    .persistence
+                                    .update_and_save(|st| st.active_network_id = Some(id.clone()))
+                                    .await;
                                 // Immediate refresh; adapter/watcher swap happens via network tick.
                                 if let Ok(b) = wallet_state.get_active_balance().await {
                                     runtime.balance.set(Some(b.clone()));

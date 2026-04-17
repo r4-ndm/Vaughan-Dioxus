@@ -8,6 +8,11 @@ fn allowlist_covers_app_subdomain() {
 }
 
 #[test]
+fn allowlist_covers_pulsex_pinata_worker_origin() {
+    assert!(hostname_is_whitelisted("pulsex.mypinata.cloud"));
+}
+
+#[test]
 fn allowlist_constant_matches_runtime() {
     assert!(!ALLOWED_HTTPS_HOST_SUFFIXES.is_empty());
 }

@@ -25,6 +25,7 @@
     "stargate.finance",
     "v4.testnet.pulsechain.com",
     "pulsex.com",
+    "pulsex.mypinata.cloud",
     "piteas.io",
     "gopulse.com",
     "internetmoney.io",
@@ -337,9 +338,22 @@
   var firstConnectEmitted = false;
   /** Until true, eth_accounts returns [] so dApp "disconnect" sticks (wagmi/Uniswap poll eth_accounts). */
   var sessionAuthorized = false;
+  var disconnectHoldUntilMs = 0;
+  var lastRevokeAtMs = 0;
+  var inflightGetAccounts = null;
+  var inflightGetNetworkInfo = null;
+  var lastAccountsAtMs = 0;
+  var lastNetworkAtMs = 0;
+  var lastAccountsValue = null;
+  var lastNetworkValue = null;
+  var IPC_CACHE_MS = 250;
+  var DISCONNECT_HOLD_MS = 2000;
 
   function clearDappSession(reason) {
     sessionAuthorized = false;
+    disconnectHoldUntilMs = Date.now() + DISCONNECT_HOLD_MS;
+    inflightGetAccounts = null;
+    inflightGetNetworkInfo = null;
     currentAccounts = [];
     firstConnectEmitted = false;
     emitter.emit("accountsChanged", []);
@@ -350,11 +364,22 @@
     syncLegacy();
   }
 
+  function sessionIsDisconnected() {
+    return (
+      !sessionAuthorized &&
+      (!currentAccounts || currentAccounts.length === 0) &&
+      !firstConnectEmitted
+    );
+  }
+
   function emitDisconnect(err) {
     currentAccounts = [];
     currentChainIdHex = null;
     firstConnectEmitted = false;
     sessionAuthorized = false;
+    disconnectHoldUntilMs = Date.now() + DISCONNECT_HOLD_MS;
+    inflightGetAccounts = null;
+    inflightGetNetworkInfo = null;
     emitter.emit(
       "disconnect",
       err || { code: 4100, message: "Wallet disconnected" }
@@ -381,22 +406,53 @@
   }
 
   async function fetchNetworkInfo() {
-    var resp = await tauriInvoke("ipc_request", {
-      request: { type: "GetNetworkInfo" },
-    });
-    if (resp && resp.type === "NetworkInfo") return resp.payload;
-    throw makeEthRpcError(4100, "Wallet not connected");
+    var now = Date.now();
+    if (lastNetworkValue && now - lastNetworkAtMs <= IPC_CACHE_MS) {
+      return lastNetworkValue;
+    }
+    if (!inflightGetNetworkInfo) {
+      inflightGetNetworkInfo = tauriInvoke("ipc_request", {
+        request: { type: "GetNetworkInfo" },
+      })
+        .then(function (resp) {
+          if (resp && resp.type === "NetworkInfo") {
+            lastNetworkValue = resp.payload;
+            lastNetworkAtMs = Date.now();
+            return resp.payload;
+          }
+          throw makeEthRpcError(4100, "Wallet not connected");
+        })
+        .finally(function () {
+          inflightGetNetworkInfo = null;
+        });
+    }
+    return inflightGetNetworkInfo;
   }
 
   async function fetchAccounts() {
-    var resp = await tauriInvoke("ipc_request", {
-      request: { type: "GetAccounts" },
-    });
-    if (resp && resp.type === "Accounts")
-      return resp.payload.map(function (a) {
-        return a.address;
-      });
-    throw makeEthRpcError(4100, "Wallet not connected");
+    var now = Date.now();
+    if (lastAccountsValue && now - lastAccountsAtMs <= IPC_CACHE_MS) {
+      return lastAccountsValue;
+    }
+    if (!inflightGetAccounts) {
+      inflightGetAccounts = tauriInvoke("ipc_request", {
+        request: { type: "GetAccounts" },
+      })
+        .then(function (resp) {
+          if (resp && resp.type === "Accounts") {
+            lastAccountsValue = resp.payload.map(function (a) {
+              return a.address;
+            });
+            lastAccountsAtMs = Date.now();
+            return lastAccountsValue;
+          }
+          throw makeEthRpcError(4100, "Wallet not connected");
+        })
+        .finally(function () {
+          inflightGetAccounts = null;
+        });
+    }
+    return inflightGetAccounts;
   }
 
   function toHexChainId(dec) {
@@ -473,14 +529,42 @@
       var m = (method || "").toLowerCase();
       try {
         if (m === "wallet_revokepermissions") {
+          var revokeNow = Date.now();
+          if (sessionIsDisconnected() && revokeNow - lastRevokeAtMs < 1500) {
+            return null;
+          }
+          lastRevokeAtMs = revokeNow;
           clearDappSession({ code: 4900, message: "Permissions revoked" });
           return null;
         }
 
+        // Legacy name used by some tooling; treat like revoke.
+        if (m === "metamask_disconnect") {
+          if (sessionIsDisconnected()) {
+            return null;
+          }
+          clearDappSession({ code: 4900, message: "Disconnected" });
+          return null;
+        }
+
         if (m === "wallet_requestpermissions") {
+          if (Date.now() < disconnectHoldUntilMs) {
+            throw makeEthRpcError(
+              4001,
+              "Wallet recently disconnected for this site. Try connect again."
+            );
+          }
           var reqPerms = (params && params[0]) || {};
           if (!reqPerms.eth_accounts) {
             throw makeEthRpcError(4200, "Unsupported permission request");
+          }
+          if (
+            sessionAuthorized &&
+            currentAccounts &&
+            currentAccounts.length
+          ) {
+            syncLegacy();
+            return { eth_accounts: currentAccounts };
           }
           if (!currentChainIdHex) {
             var netRp = await fetchNetworkInfo();
@@ -525,13 +609,31 @@
           } else {
             accRo = await fetchAccounts();
           }
+          var prevJson = JSON.stringify(currentAccounts || []);
+          var nextJson = JSON.stringify(accRo || []);
           currentAccounts = accRo;
-          emitter.emit("accountsChanged", accRo);
+          if (prevJson !== nextJson) {
+            emitter.emit("accountsChanged", accRo);
+          }
           syncLegacy();
           return accRo;
         }
 
         if (m === "eth_requestaccounts") {
+          if (Date.now() < disconnectHoldUntilMs) {
+            throw makeEthRpcError(
+              4001,
+              "Wallet recently disconnected for this site. Try connect again."
+            );
+          }
+          if (
+            sessionAuthorized &&
+            currentAccounts &&
+            currentAccounts.length
+          ) {
+            syncLegacy();
+            return currentAccounts;
+          }
           var accounts;
           if (!currentChainIdHex) {
             var pair = await Promise.all([fetchNetworkInfo(), fetchAccounts()]);

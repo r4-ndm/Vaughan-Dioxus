@@ -1,7 +1,9 @@
 use dioxus::prelude::*;
+use std::time::Duration;
 
 use vaughan_core::monitoring::BalanceEvent;
 
+use crate::browser;
 use crate::components::ColoredAddressText;
 use crate::services::shared_services;
 use crate::theme::ThemeStyles;
@@ -112,6 +114,9 @@ pub fn WalletApp() -> Element {
         }
     });
     let mut show_hardware_modal = use_signal(|| false);
+    let dapp_prewarm_booted = use_signal(|| false);
+    let last_prewarm_chain = use_signal(|| None::<u64>);
+    let last_prewarm_signature = use_signal(String::new);
 
     let finish_onboarding = use_callback({
         let mut phase = phase;
@@ -129,6 +134,9 @@ pub fn WalletApp() -> Element {
         move || {
             let services = services.clone();
             spawn(async move {
+                if let Some(saved_id) = services.persistence.snapshot().active_network_id {
+                    let _ = services.network_service.set_active_network(&saved_id).await;
+                }
                 if services.account_manager.has_master_wallet()
                     && services.session_password().await.is_some()
                 {
@@ -140,6 +148,50 @@ pub fn WalletApp() -> Element {
                     )
                     .await;
                     phase.set(WalletPhase::Main);
+                }
+            });
+        }
+    });
+
+    use_effect({
+        let phase = phase;
+        let mut dapp_prewarm_booted = dapp_prewarm_booted;
+        let mut last_prewarm_chain = last_prewarm_chain;
+        let mut last_prewarm_signature = last_prewarm_signature;
+        let services = services.clone();
+        move || {
+            if *dapp_prewarm_booted.read() {
+                return;
+            }
+            dapp_prewarm_booted.set(true);
+            let phase = phase;
+            let services = services.clone();
+            spawn(async move {
+                loop {
+                    if *phase.read() == WalletPhase::Main {
+                        if let Some(net) = services.network_service.active_network().await {
+                            let chain_id = net.chain_id;
+                            // Broad DNS+TCP preconnect to every visible trusted dApp host so the
+                            // user's first *non-rocket* click skips cold DNS/TCP/TLS cost. Internally
+                            // throttled + deduped, so it's safe to call on every tick.
+                            browser::preconnect_all_visible_trusted_origins_for_chain(chain_id);
+                            let candidates =
+                                browser::compute_top_trusted_candidates_for_chain(6, chain_id);
+                            let signature = candidates
+                                .iter()
+                                .map(|u| browser::dapp_preference_key(u))
+                                .collect::<Vec<_>>()
+                                .join("|");
+                            let chain_changed = *last_prewarm_chain.read() != Some(chain_id);
+                            let candidates_changed = *last_prewarm_signature.read() != signature;
+                            if chain_changed || candidates_changed {
+                                last_prewarm_chain.set(Some(chain_id));
+                                last_prewarm_signature.set(signature);
+                                browser::prewarm_top_trusted_dapps_for_chain(6, chain_id);
+                            }
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_secs(2)).await;
                 }
             });
         }

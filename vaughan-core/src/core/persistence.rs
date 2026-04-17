@@ -8,6 +8,7 @@ use crate::core::NetworkConfig;
 use crate::error::WalletError;
 use alloy::primitives::Address;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::ops::DerefMut;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -113,10 +114,26 @@ pub struct PersistedState {
     pub preferences: Option<UserPreferences>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UserPreferences {
+    #[serde(default)]
     pub sound_enabled: bool,
+    #[serde(default)]
     pub polling_interval_secs: u64,
+    #[serde(default)]
+    pub dapp_usage_v1: HashMap<String, DappUsageStats>,
+    #[serde(default)]
+    pub fast_dapps_by_chain_v1: HashMap<String, Vec<String>>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DappUsageStats {
+    #[serde(default)]
+    pub last_open_ts_ms: u64,
+    #[serde(default)]
+    pub open_count_30d: u32,
+    #[serde(default)]
+    pub window_start_ts_ms: u64,
 }
 
 /// State manager: load/save persisted state (async API over the same file as [`PersistenceHandle`]).

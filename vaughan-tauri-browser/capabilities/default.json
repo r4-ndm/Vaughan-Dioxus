@@ -39,6 +39,8 @@
       "https://*.v4.testnet.pulsechain.com/*",
       "https://pulsex.com/*",
       "https://*.pulsex.com/*",
+      "https://pulsex.mypinata.cloud/*",
+      "https://*.pulsex.mypinata.cloud/*",
       "https://piteas.io/*",
       "https://*.piteas.io/*",
       "https://gopulse.com/*",

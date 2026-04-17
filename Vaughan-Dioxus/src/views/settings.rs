@@ -419,6 +419,10 @@ pub fn use_settings_coroutine() -> Coroutine<SettingsCmd> {
                         if let Err(e) = services.network_service.set_active_network(&id).await {
                             rt2.error.set(Some(e.user_message()));
                         } else {
+                            let _ = services
+                                .persistence
+                                .update_and_save(|st| st.active_network_id = Some(id.clone()))
+                                .await;
                             rt2.active_network.set(Some(id));
                             // Refresh tokens for newly active network.
                             let chain_id = services

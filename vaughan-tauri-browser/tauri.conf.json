@@ -9,7 +9,7 @@
     "windows": [],
     "withGlobalTauri": true,
     "security": {
-      "csp": "default-src 'self' https: data: blob:; connect-src ipc: http://ipc.localhost",
+      "csp": "default-src 'self' https: data: blob:; connect-src 'self' https: wss: http: ws: data: blob: ipc: http://ipc.localhost; worker-src 'self' https: blob: data:",
       "capabilities": ["default"]
     }
   },

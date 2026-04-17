@@ -10,11 +10,7 @@ From the **repository root**, build the dApp browser and wallet, then launch the
 cargo build -p vaughan-tauri-browser && cargo build -p vaughan-dioxus && cargo run -p vaughan-dioxus
 ```
 
-Release build and run:
-
-```bash
-cargo build --release -p vaughan-tauri-browser && cargo build --release -p vaughan-dioxus && cargo run --release -p vaughan-dioxus
-```
+For an optimized build, add `--release` to each of those three `cargo` invocations (see [DEVELOPER_GUIDE.md](DEVELOPER_GUIDE.md) for more detail).
 
 ## Layout
 

@@ -55,7 +55,7 @@ fn main() {
         let _browser_guard = browser::BrowserProcessGuard::launch_if_available(services);
         tracing::info!(
             target: "vaughan_app",
-            "dApp browser IPC armed (child process starts on first trusted dApp open)"
+            "dApp browser IPC armed (hidden warm shell may start when the browser binary is present)"
         );
 
         // Dioxus defaults to a standard OS menu (Window / Edit / Help); Vaughan-Tauri wallet has none.

@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -50,6 +51,8 @@ pub fn DappsView(on_back: Callback<()>) -> Element {
     let mut custom_url = use_signal(String::new);
     let mut custom_dapps = use_signal(Vec::<CustomDappEntry>::new);
     let mut hidden_core_urls = use_signal(Vec::<String>::new);
+    let fast_dapp_keys = use_signal(HashSet::<String>::new);
+    let last_fast_chain_loaded = use_signal(|| None::<u64>);
     let mut url_bar_error = use_signal(|| None::<String>);
     let mut launching_custom = use_signal(|| false);
 
@@ -65,6 +68,33 @@ pub fn DappsView(on_back: Callback<()>) -> Element {
             pending_tx.set(broker().pending_sign_transaction());
         }
     };
+
+    // Fast dApps are stored per chain; `active_chain_id` may start at 1 then update when the
+    // network poll restores PulseChain — reload whenever the chain id actually changes.
+    use_effect({
+        let services = services.clone();
+        let mut fast_dapp_keys = fast_dapp_keys;
+        let mut last_fast_chain_loaded = last_fast_chain_loaded;
+        move || {
+            let cid = active_chain_id();
+            if *last_fast_chain_loaded.read() == Some(cid) {
+                return;
+            }
+            last_fast_chain_loaded.set(Some(cid));
+            let pref = services
+                .persistence
+                .snapshot()
+                .preferences
+                .unwrap_or_default();
+            let chain_key = cid.to_string();
+            let fast_for_chain = pref
+                .fast_dapps_by_chain_v1
+                .get(&chain_key)
+                .cloned()
+                .unwrap_or_default();
+            fast_dapp_keys.set(fast_for_chain.into_iter().take(6).collect());
+        }
+    });
 
     use_effect({
         let services = services.clone();
@@ -146,6 +176,9 @@ pub fn DappsView(on_back: Callback<()>) -> Element {
         let services = services.clone();
         let wallet_state = wallet_state.clone();
         let runtime = runtime.clone();
+        let mut active_network_id = active_network_id;
+        let mut active_chain_id = active_chain_id;
+        let mut fast_dapp_keys = fast_dapp_keys;
         move |id: String| {
             let services = services.clone();
             let wallet_state = wallet_state.clone();
@@ -159,6 +192,26 @@ pub fn DappsView(on_back: Callback<()>) -> Element {
                 {
                     return;
                 }
+                if let Some(net) = services.network_service.active_network().await {
+                    active_network_id.set(Some(net.id.clone()));
+                    active_chain_id.set(net.chain_id);
+                    let chain_key = net.chain_id.to_string();
+                    let pref = services
+                        .persistence
+                        .snapshot()
+                        .preferences
+                        .unwrap_or_default();
+                    let fast_for_chain = pref
+                        .fast_dapps_by_chain_v1
+                        .get(&chain_key)
+                        .cloned()
+                        .unwrap_or_default();
+                    fast_dapp_keys.set(fast_for_chain.into_iter().take(6).collect());
+                }
+                let _ = services
+                    .persistence
+                    .update_and_save(|st| st.active_network_id = Some(id.clone()))
+                    .await;
                 refresh_evm_adapter_for_active_network(
                     wallet_state.as_ref(),
                     services.network_service.as_ref(),
@@ -253,10 +306,6 @@ pub fn DappsView(on_back: Callback<()>) -> Element {
                 }
             }
 
-            p { class: "muted", style: "margin: 0; font-size: 13px; text-align: center;",
-                "Trusted sites open in the Vaughan browser with the wallet connected. Approve signing requests below."
-            }
-
             if *no_accounts_for_dapps.read() {
                 p {
                     class: "muted",
@@ -271,6 +320,15 @@ pub fn DappsView(on_back: Callback<()>) -> Element {
                         let d = d.clone();
                         let fav = google_favicon_url_for_dapp(&d.url).unwrap_or_default();
                         let host = host_label(&d.url);
+                        let fast_key = browser::dapp_preference_key(&d.url);
+                        let is_fast = fast_dapp_keys.read().contains(&fast_key);
+                        let warm_state = if is_fast {
+                            browser::dapp_warm_hint_for_url(&d.url)
+                        } else {
+                            "Standard"
+                        };
+                        let fully_warmed = matches!(warm_state, "Ready" | "Claimed");
+                        let remove_url = d.url.clone();
                         rsx! {
                             div {
                                 key: "{d.url}",
@@ -278,8 +336,14 @@ pub fn DappsView(on_back: Callback<()>) -> Element {
                                 onclick: {
                                     let mut err_sig = dapp_open_error;
                                     let u = d.url.clone();
+                                    let is_fast = is_fast;
                                     move |_| {
-                                        match browser::open_trusted_dapp_url(&u) {
+                                        let res = if is_fast {
+                                            browser::open_trusted_dapp_url_prefer_warm_window(&u)
+                                        } else {
+                                            browser::open_trusted_dapp_url_new_window(&u)
+                                        };
+                                        match res {
                                             Ok(()) => err_sig.set(None),
                                             Err(e) => err_sig.set(Some(e)),
                                         }
@@ -290,7 +354,7 @@ pub fn DappsView(on_back: Callback<()>) -> Element {
                                     title: "Remove from your list",
                                     onclick: move |e| {
                                         e.stop_propagation();
-                                        let u = d.url.clone();
+                                        let u = remove_url.clone();
                                         custom_dapps.with_mut(|v| v.retain(|x| x.url != u));
                                     },
                                     "🗑"
@@ -313,6 +377,74 @@ pub fn DappsView(on_back: Callback<()>) -> Element {
                                     div { style: "margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; gap: 8px;",
                                         span { class: "dapp-card-cat", "Custom" }
                                         span { class: "dapp-card-host", "{host}" }
+                                        button {
+                                            class: "btn",
+                                            title: "Prioritize this dApp for fast prewarm",
+                                            onclick: {
+                                                let services = services.clone();
+                                                let mut fast_dapp_keys = fast_dapp_keys;
+                                                let key = fast_key.clone();
+                                                let mut err_sig = dapp_open_error;
+                                                move |e| {
+                                                    e.stop_propagation();
+                                                    let mut next = fast_dapp_keys.read().clone();
+                                                    if next.contains(&key) {
+                                                        next.remove(&key);
+                                                    } else if next.len() >= 6 {
+                                                        err_sig.set(Some("You can select up to 6 fast dApps. Deselect one first.".into()));
+                                                        return;
+                                                    } else {
+                                                        next.insert(key.clone());
+                                                    }
+                                                    err_sig.set(None);
+                                                    let persisted: Vec<String> = next.iter().cloned().collect();
+                                                    let chain_key = active_chain_id().to_string();
+                                                    fast_dapp_keys.set(next);
+                                                    let services = services.clone();
+                                                    spawn(async move {
+                                                        let _ = services.persistence.update_and_save(|st| {
+                                                            let mut prefs = st.preferences.clone().unwrap_or_default();
+                                                            if prefs.polling_interval_secs == 0 {
+                                                                prefs.polling_interval_secs = 10;
+                                                            }
+                                                            prefs.fast_dapps_by_chain_v1.insert(chain_key, persisted);
+                                                            st.preferences = Some(prefs);
+                                                        }).await;
+                                                    });
+                                                }
+                                            },
+                                            style: if fast_dapp_keys.read().contains(&fast_key) {
+                                                "min-width: 36px; opacity: 1; filter: grayscale(0) saturate(1.25);"
+                                            } else {
+                                                "min-width: 36px; opacity: 0.35; filter: grayscale(1) saturate(0.2);"
+                                            },
+                                            "🚀"
+                                        }
+                                    }
+                                    if is_fast {
+                                        div { style: "margin-top: 8px; display: flex; align-items: center; gap: 8px;",
+                                            span {
+                                                style: if fully_warmed {
+                                                    "font-size: 10px; font-weight: 700; color: #a8f6c3;"
+                                                } else {
+                                                    "font-size: 10px; font-weight: 700; color: #ffd58a;"
+                                                },
+                                                if fully_warmed {
+                                                    "🚀 Fully Warmed"
+                                                } else {
+                                                    "🚀 Not Warmed Yet"
+                                                }
+                                            }
+                                            div { style: "height: 6px; flex: 1; border-radius: 999px; background: rgba(255,255,255,0.14); overflow: hidden;",
+                                                div {
+                                                    style: if fully_warmed {
+                                                        "height: 100%; width: 100%; background: rgba(15,161,95,0.95);".to_string()
+                                                    } else {
+                                                        "height: 100%; width: 35%; background: rgba(214,164,38,0.95);".to_string()
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -324,6 +456,14 @@ pub fn DappsView(on_back: Callback<()>) -> Element {
                         let entry = *entry;
                         let fav = google_favicon_url_for_dapp(entry.url).unwrap_or_default();
                         let host = host_label(entry.url);
+                        let fast_key = browser::dapp_preference_key(entry.url);
+                        let is_fast = fast_dapp_keys.read().contains(&fast_key);
+                        let warm_state = if is_fast {
+                            browser::dapp_warm_hint_for_url(entry.url)
+                        } else {
+                            "Standard"
+                        };
+                        let fully_warmed = matches!(warm_state, "Ready" | "Claimed");
                         rsx! {
                             div {
                                 key: "{entry.url}",
@@ -331,8 +471,14 @@ pub fn DappsView(on_back: Callback<()>) -> Element {
                                 onclick: {
                                     let mut err_sig = dapp_open_error;
                                     let u = entry.url.to_string();
+                                    let is_fast = is_fast;
                                     move |_| {
-                                        match browser::open_trusted_dapp_url(&u) {
+                                        let res = if is_fast {
+                                            browser::open_trusted_dapp_url_prefer_warm_window(&u)
+                                        } else {
+                                            browser::open_trusted_dapp_url_new_window(&u)
+                                        };
+                                        match res {
                                             Ok(()) => err_sig.set(None),
                                             Err(e) => err_sig.set(Some(e)),
                                         }
@@ -370,6 +516,74 @@ pub fn DappsView(on_back: Callback<()>) -> Element {
                                     div { style: "margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; gap: 8px;",
                                         span { class: "dapp-card-cat", "{entry.category}" }
                                         span { class: "dapp-card-host", "{host}" }
+                                        button {
+                                            class: "btn",
+                                            title: "Prioritize this dApp for fast prewarm",
+                                            onclick: {
+                                                let services = services.clone();
+                                                let mut fast_dapp_keys = fast_dapp_keys;
+                                                let key = fast_key.clone();
+                                                let mut err_sig = dapp_open_error;
+                                                move |e| {
+                                                    e.stop_propagation();
+                                                    let mut next = fast_dapp_keys.read().clone();
+                                                    if next.contains(&key) {
+                                                        next.remove(&key);
+                                                    } else if next.len() >= 6 {
+                                                        err_sig.set(Some("You can select up to 6 fast dApps. Deselect one first.".into()));
+                                                        return;
+                                                    } else {
+                                                        next.insert(key.clone());
+                                                    }
+                                                    err_sig.set(None);
+                                                    let persisted: Vec<String> = next.iter().cloned().collect();
+                                                    let chain_key = active_chain_id().to_string();
+                                                    fast_dapp_keys.set(next);
+                                                    let services = services.clone();
+                                                    spawn(async move {
+                                                        let _ = services.persistence.update_and_save(|st| {
+                                                            let mut prefs = st.preferences.clone().unwrap_or_default();
+                                                            if prefs.polling_interval_secs == 0 {
+                                                                prefs.polling_interval_secs = 10;
+                                                            }
+                                                            prefs.fast_dapps_by_chain_v1.insert(chain_key, persisted);
+                                                            st.preferences = Some(prefs);
+                                                        }).await;
+                                                    });
+                                                }
+                                            },
+                                            style: if fast_dapp_keys.read().contains(&fast_key) {
+                                                "min-width: 36px; opacity: 1; filter: grayscale(0) saturate(1.25);"
+                                            } else {
+                                                "min-width: 36px; opacity: 0.35; filter: grayscale(1) saturate(0.2);"
+                                            },
+                                            "🚀"
+                                        }
+                                    }
+                                    if is_fast {
+                                        div { style: "margin-top: 8px; display: flex; align-items: center; gap: 8px;",
+                                            span {
+                                                style: if fully_warmed {
+                                                    "font-size: 10px; font-weight: 700; color: #a8f6c3;"
+                                                } else {
+                                                    "font-size: 10px; font-weight: 700; color: #ffd58a;"
+                                                },
+                                                if fully_warmed {
+                                                    "🚀 Fully Warmed"
+                                                } else {
+                                                    "🚀 Not Warmed Yet"
+                                                }
+                                            }
+                                            div { style: "height: 6px; flex: 1; border-radius: 999px; background: rgba(255,255,255,0.14); overflow: hidden;",
+                                                div {
+                                                    style: if fully_warmed {
+                                                        "height: 100%; width: 100%; background: rgba(15,161,95,0.95);".to_string()
+                                                    } else {
+                                                        "height: 100%; width: 35%; background: rgba(214,164,38,0.95);".to_string()
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -440,10 +654,8 @@ pub fn DappsView(on_back: Callback<()>) -> Element {
                             url_bar_error.set(None);
                             match validate_whitelisted_dapp_url(&formatted) {
                                 Ok(normalized) => {
-                                    match browser::open_trusted_dapp_url(&normalized) {
-                                        Ok(()) => {
-                                            dapp_open_error.set(None);
-                                        }
+                                    match browser::open_trusted_dapp_url_new_window(&normalized) {
+                                        Ok(()) => dapp_open_error.set(None),
                                         Err(err) => dapp_open_error.set(Some(err)),
                                     }
                                 }
@@ -467,7 +679,7 @@ pub fn DappsView(on_back: Callback<()>) -> Element {
                         url_bar_error.set(None);
                         match validate_whitelisted_dapp_url(&formatted) {
                             Ok(normalized) => {
-                                match browser::open_trusted_dapp_url(&normalized) {
+                                match browser::open_trusted_dapp_url_new_window(&normalized) {
                                     Ok(()) => dapp_open_error.set(None),
                                     Err(err) => dapp_open_error.set(Some(err)),
                                 }

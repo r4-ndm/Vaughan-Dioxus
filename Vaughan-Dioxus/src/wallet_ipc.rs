@@ -2,8 +2,9 @@ use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Write};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use alloy::signers::local::PrivateKeySigner;
 use alloy::signers::SignerSync;
@@ -21,6 +22,37 @@ use vaughan_core::chains::EvmTransaction;
 use vaughan_core::core::transaction::TransactionService;
 use vaughan_core::core::AccountType;
 use vaughan_core::security::{derive_account, mnemonic_to_seed};
+
+/// Set to true after a valid dApp-browser IPC handshake completes (see `handle_connection`).
+/// Paired with a condvar so callers can wake as soon as the handshake completes instead of polling.
+static DAPP_BROWSER_IPC_HANDSHAKE: Mutex<bool> = Mutex::new(false);
+static DAPP_BROWSER_IPC_HANDSHAKE_CV: Condvar = Condvar::new();
+
+#[inline]
+pub fn reset_dapp_browser_ipc_handshake_gate() {
+    if let Ok(mut g) = DAPP_BROWSER_IPC_HANDSHAKE.lock() {
+        *g = false;
+    }
+}
+
+/// Blocks until the dApp-browser IPC handshake completes or `max` elapses.
+/// Used to defer work (e.g. hidden prewarm navigates) until the browser is ready.
+#[inline]
+pub fn wait_dapp_browser_ipc_handshake(max: Duration) -> bool {
+    let deadline = Instant::now() + max;
+    let mut g = DAPP_BROWSER_IPC_HANDSHAKE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    while !*g {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return *g;
+        }
+        let (guard, _) = DAPP_BROWSER_IPC_HANDSHAKE_CV.wait_timeout(g, left).unwrap();
+        g = guard;
+    }
+    true
+}
 
 pub struct WalletIpcServer {
     stop: Arc<AtomicBool>,
@@ -185,6 +217,13 @@ fn handle_connection(
     };
     if stream.write_all(format!("{ack}\n").as_bytes()).is_err() {
         return;
+    }
+    {
+        let mut done = DAPP_BROWSER_IPC_HANDSHAKE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        *done = true;
+        DAPP_BROWSER_IPC_HANDSHAKE_CV.notify_all();
     }
 
     line.clear();

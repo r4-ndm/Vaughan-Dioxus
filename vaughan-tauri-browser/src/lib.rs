@@ -12,31 +12,295 @@
 //!
 //! **In-app navigation:** [`navigate_trusted_dapp`] moves the **main** webview without respawning the process. The URL is re-checked in Rust against the same allowlist as `--url`; invoke is gated by the `allow-navigate-trusted-dapp` capability (same `remote.urls` set as IPC).
 //!
-//! **Wallet warm shell:** With `VAUGHAN_WALLET_SPAWNED=1` and `VAUGHAN_WALLET_WARM_SHELL=1`, the window starts hidden on `index.html`; newline-delimited JSON on stdin (`{"navigate_trusted":"<url>"}`) navigates the main webview, then shows and focuses it. The Dioxus wallet uses this so the first dApp avoids cold process start.
+//! **Wallet warm shell:** With `VAUGHAN_WALLET_SPAWNED=1` and `VAUGHAN_WALLET_WARM_SHELL=1`, the window starts hidden on `index.html`; newline-delimited JSON on stdin (`{"navigate_trusted":"<url>"}`) navigates the main webview, then shows and focuses it. Add `"reveal":false` to navigate while keeping the window hidden (used for prewarm). The Dioxus wallet uses this so the first dApp avoids cold process start.
+//!
+//! **Warm slot pool:** stdin `cmd` messages manage up to six `warm-slot-*` windows. Each slot emits
+//! `slot_loaded` on real `PageLoadEvent::Finished` for allowlisted top-level URLs; stdout also carries
+//! `heartbeat` every 5s for parent liveness checks.
+//!
+//! **New-window / `target=_blank`:** On desktop, Wry only wires WebKit's create signal when a
+//! [`WebviewWindowBuilder::on_new_window`] handler exists. Without it, many dApp links that open
+//! a new window appear to do nothing. We route allowlisted URLs into the **main** webview instead.
+//! Serializes those navigations so rapid `window.open` bursts do not stack `navigate` on WebKit.
+//!
+//! **Reload:** Many SPAs capture **Ctrl+R** before the window menu sees it. The Navigation menu uses
+//! **F5** (Linux/Windows) or **Super+R** (macOS) as the reload accelerator, and falls back to
+//! `location.reload()` if the native webview reload fails (e.g. after a renderer glitch).
 
 mod ipc;
 mod ipc_pool;
 
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::io::Write;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use ipc_pool::WalletIpcPool;
 use serde::Deserialize;
+use tauri::webview::NewWindowResponse;
 use tauri::webview::PageLoadEvent;
 use tauri::Manager;
 use tauri::Url;
 use tauri::WebviewUrl;
+use tauri::WebviewWindow;
 
 use vaughan_ipc_types::{IpcRequest, IpcResponse};
 use vaughan_trusted_hosts::hostname_is_whitelisted;
 
+// #region agent log
+static PERF_LAST_NAV_AT_MS: AtomicU64 = AtomicU64::new(0);
+static PERF_FIRST_RPC_LOGGED_FOR_NAV_AT_MS: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug, Clone, Default)]
+struct NavPerfTrace {
+    nav_at_ms: u64,
+    url: String,
+    reveal: bool,
+    dispatch_ms: Option<u64>,
+    page_start_ms: Option<u64>,
+    page_finish_ms: Option<u64>,
+    first_ipc_ms: Option<u64>,
+    summary_emitted: bool,
+}
+
+static NAV_PERF_TRACE: Mutex<NavPerfTrace> = Mutex::new(NavPerfTrace {
+    nav_at_ms: 0,
+    url: String::new(),
+    reveal: false,
+    dispatch_ms: None,
+    page_start_ms: None,
+    page_finish_ms: None,
+    first_ipc_ms: None,
+    summary_emitted: false,
+});
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+fn emit_wallet_event(event: &str, data: serde_json::Value) {
+    let payload = serde_json::json!({
+        "event": event,
+        "data": data,
+        "ts_ms": now_ms(),
+    });
+    let mut out = std::io::stdout().lock();
+    let _ = writeln!(out, "{payload}");
+    let _ = out.flush();
+}
+
+fn emit_nav_perf_summary_if_ready(trigger: &str) {
+    let mut summary = None;
+    if let Ok(mut trace) = NAV_PERF_TRACE.lock() {
+        if trace.nav_at_ms > 0 && !trace.summary_emitted {
+            if trace.first_ipc_ms.is_some() || trace.page_finish_ms.is_some() {
+                trace.summary_emitted = true;
+                summary = Some(serde_json::json!({
+                    "trigger": trigger,
+                    "url": trace.url,
+                    "reveal": trace.reveal,
+                    "dispatch_ms": trace.dispatch_ms,
+                    "page_start_ms": trace.page_start_ms.map(|t| t.saturating_sub(trace.nav_at_ms)),
+                    "page_finish_ms": trace.page_finish_ms.map(|t| t.saturating_sub(trace.nav_at_ms)),
+                    "first_ipc_ms": trace.first_ipc_ms.map(|t| t.saturating_sub(trace.nav_at_ms)),
+                }));
+            }
+        }
+    }
+    if let Some(data) = summary {
+        agent_browser_perf_log("P4", "open_latency_summary", data);
+    }
+}
+
+fn agent_browser_perf_log(hypothesis_id: &str, message: &str, data: serde_json::Value) {
+    let ts = now_ms() as u128;
+    let payload = serde_json::json!({
+        "sessionId": "bf0ab3",
+        "runId": "dapp-open-perf",
+        "hypothesisId": hypothesis_id,
+        "location": "vaughan-tauri-browser/src/lib.rs",
+        "message": message,
+        "data": data,
+        "timestamp": ts,
+    });
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join(".cursor")
+        .join("debug-bf0ab3.log");
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(f, "{}", payload);
+    }
+}
+// #endregion
+
+/// Prevents overlapping `navigate_main_trusted_app` calls from nested `on_new_window` bursts.
+static ON_NEWWIN_NAV_BUSY: AtomicBool = AtomicBool::new(false);
+
+struct ClearOnNewwinBusy;
+
+impl Drop for ClearOnNewwinBusy {
+    fn drop(&mut self) {
+        ON_NEWWIN_NAV_BUSY.store(false, Ordering::Release);
+    }
+}
+
+fn hard_reload_main_webview(w: &WebviewWindow) {
+    if w.reload().is_err() {
+        tracing::debug!(
+            target: "vaughan_ipc_browser",
+            "native webview.reload failed; falling back to location.reload()"
+        );
+        let _ = w.eval(
+            "try{window.location.reload();}catch(e){console.error('[Vaughan] reload fallback',e);}",
+        );
+    }
+}
+
+fn warmup_status_bar_script(remaining_secs: u64) -> String {
+    const TOTAL_SECS: u64 = 150;
+    let initial_remaining = remaining_secs.min(TOTAL_SECS);
+    let mode = if initial_remaining > 0 {
+        "warming"
+    } else {
+        "ready"
+    };
+    format!(
+        r#"(function(){{
+  if (window.__VAUGHAN_WARMUP_BAR_INIT__) return;
+  window.__VAUGHAN_WARMUP_BAR_INIT__ = true;
+  var MODE = {mode:?};
+  var REM = {initial_remaining};
+  var TOTAL = {TOTAL_SECS};
+  var ROOT_ID = 'vaughan-warmup-root';
+  var FILL_ID = 'vaughan-warmup-fill';
+  var LABEL_ID = 'vaughan-warmup-label';
+  var READY_TEXT = 'Rocket warmup ready - fastest launch state';
+  function ensure() {{
+    var root = document.getElementById(ROOT_ID);
+    if (!root) {{
+      root = document.createElement('div');
+      root.id = ROOT_ID;
+      root.style.position = 'fixed';
+      root.style.left = '0';
+      root.style.right = '0';
+      root.style.top = '0';
+      root.style.zIndex = '2147483647';
+      root.style.padding = '6px 10px 8px 10px';
+      root.style.background = 'rgba(18,20,24,0.96)';
+      root.style.borderBottom = '1px solid rgba(255,255,255,0.12)';
+      root.style.pointerEvents = 'none';
+
+      var label = document.createElement('div');
+      label.id = LABEL_ID;
+      label.style.font = '700 13px/1.25 system-ui,-apple-system,Segoe UI,Roboto,sans-serif';
+      label.style.marginBottom = '6px';
+      label.style.textAlign = 'center';
+
+      var track = document.createElement('div');
+      track.style.height = '10px';
+      track.style.borderRadius = '999px';
+      track.style.background = 'rgba(255,255,255,0.14)';
+      track.style.overflow = 'hidden';
+
+      var fill = document.createElement('div');
+      fill.id = FILL_ID;
+      fill.style.height = '100%';
+      fill.style.width = '0%';
+      fill.style.borderRadius = '999px';
+      fill.style.transition = 'width 0.6s ease';
+      fill.style.backgroundSize = '24px 24px';
+      fill.style.backgroundImage =
+        'linear-gradient(45deg, rgba(255,255,255,0.22) 25%, transparent 25%, transparent 50%, rgba(255,255,255,0.22) 50%, rgba(255,255,255,0.22) 75%, transparent 75%, transparent)';
+      fill.style.animation = 'vaughanWarmupStripe 1s linear infinite';
+
+      track.appendChild(fill);
+      root.appendChild(label);
+      root.appendChild(track);
+      document.documentElement.appendChild(root);
+
+      var style = document.createElement('style');
+      style.textContent = '@keyframes vaughanWarmupStripe{{from{{background-position:0 0;}}to{{background-position:24px 0;}}}}';
+      document.documentElement.appendChild(style);
+      var body = document.body;
+      if (body && !body.dataset.vaughanWarmupPad) {{
+        body.dataset.vaughanWarmupPad = '1';
+        body.style.paddingTop = '44px';
+      }}
+    }}
+    var fill = document.getElementById(FILL_ID);
+    var label = document.getElementById(LABEL_ID);
+    if (!fill || !label) return;
+    if (MODE === 'warming') {{
+      var left = Math.max(0, REM);
+      var pct = Math.round(((TOTAL - left) / TOTAL) * 100);
+      fill.style.width = pct + '%';
+      fill.style.backgroundColor = '#d58b00';
+      label.style.color = '#ffe8b0';
+      label.textContent = 'Rocket warmup ' + pct + '%  (~' + left + 's left)';
+      if (left > 0) REM = left - 1;
+      if (left <= 0) MODE = 'ready';
+    }} else {{
+      fill.style.width = '100%';
+      fill.style.backgroundColor = '#0fa15f';
+      fill.style.backgroundImage = 'none';
+      fill.style.animation = 'none';
+      label.style.color = '#c8ffd9';
+      label.textContent = READY_TEXT;
+    }}
+  }}
+  ensure();
+  setInterval(ensure, 1000);
+}})();"#,
+    )
+}
+
 /// Cap wallet control lines so a bug or broken pipe cannot grow unbounded in memory.
 const MAX_WALLET_STDIN_LINE_BYTES: usize = 8192;
+const WARM_SLOT_MVP_CAP: u8 = 6;
+const PROVIDER_INIT_SCRIPT: &str = include_str!("../provider_inject.js");
+
+/// Same `eval` fallback as the main webview, installed on warm-slot `PageLoadEvent::Finished`.
+static WARM_SLOT_PROVIDER_FALLBACK: OnceLock<Option<Arc<String>>> = OnceLock::new();
+static WARM_SLOT_PING_FAIL_STREAK: OnceLock<Mutex<HashMap<u8, u8>>> = OnceLock::new();
+
+fn default_reveal_true() -> bool {
+    true
+}
 
 #[derive(Debug, Deserialize)]
-struct WalletStdinNavigate {
+struct WalletWarmSlotById {
+    slot_id: u8,
+}
+
+#[derive(Debug, Deserialize)]
+struct WalletWarmSlotNavigateHidden {
+    slot_id: u8,
+    url: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct WalletStdinControl {
+    cmd: Option<String>,
+    id: Option<u8>,
+    url: Option<String>,
     navigate_trusted: Option<String>,
+    #[serde(default = "default_reveal_true")]
+    reveal: bool,
+    warm_slot_navigate_hidden: Option<WalletWarmSlotNavigateHidden>,
+    warm_slot_show: Option<WalletWarmSlotById>,
+    warm_slot_hide: Option<WalletWarmSlotById>,
+    warm_slot_destroy: Option<WalletWarmSlotById>,
 }
 
 /// Read until `\n`, EOF, or `max` content bytes (newline not counted). On overflow, discards through the
@@ -77,16 +341,300 @@ fn read_wallet_stdin_framed_line(
     }
 }
 
-/// Shared by [`navigate_trusted_dapp`] and wallet stdin control: allowlisted URL, navigate main, show + focus.
-fn navigate_main_trusted_app(app: &tauri::AppHandle, url: String) -> Result<(), String> {
+/// Shared by [`navigate_trusted_dapp`] and wallet stdin control: allowlisted URL, navigate main.
+/// When `reveal` is true, shows and focuses the window (normal dApp open).
+fn navigate_main_trusted_app(
+    app: &tauri::AppHandle,
+    url: String,
+    reveal: bool,
+) -> Result<(), String> {
+    let started = std::time::Instant::now();
     let u = parse_allowlisted_navigation_url(&url)?;
+    let ts_ms = now_ms();
+    PERF_LAST_NAV_AT_MS.store(ts_ms, Ordering::Relaxed);
+    if let Ok(mut trace) = NAV_PERF_TRACE.lock() {
+        trace.nav_at_ms = ts_ms;
+        trace.url = url.clone();
+        trace.reveal = reveal;
+        trace.dispatch_ms = None;
+        trace.page_start_ms = None;
+        trace.page_finish_ms = None;
+        trace.first_ipc_ms = None;
+        trace.summary_emitted = false;
+    }
+    // #region agent log
+    agent_browser_perf_log(
+        "P3",
+        "navigate_main_start",
+        serde_json::json!({ "url": url, "reveal": reveal }),
+    );
+    // #endregion
     let w = app
         .get_webview_window("main")
         .ok_or_else(|| "main webview not found".to_string())?;
+    if !reveal {
+        if let Ok(true) = w.is_visible() {
+            return Err("skip hidden prewarm navigate while window is visible".to_string());
+        }
+    }
     w.navigate(u).map_err(|e| e.to_string())?;
+    if reveal {
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+    // #region agent log
+    agent_browser_perf_log(
+        "P3",
+        "navigate_main_dispatched",
+        serde_json::json!({ "elapsed_ms": started.elapsed().as_millis(), "reveal": reveal }),
+    );
+    // #endregion
+    if let Ok(mut trace) = NAV_PERF_TRACE.lock() {
+        trace.dispatch_ms = Some(started.elapsed().as_millis() as u64);
+    }
+    Ok(())
+}
+
+fn warm_slot_label(slot_id: u8) -> Option<String> {
+    if slot_id < WARM_SLOT_MVP_CAP {
+        Some(format!("warm-slot-{slot_id}"))
+    } else {
+        None
+    }
+}
+
+fn ensure_warm_slot_window(
+    app: &tauri::AppHandle,
+    slot_id: u8,
+) -> Result<tauri::WebviewWindow, String> {
+    let label = warm_slot_label(slot_id).ok_or_else(|| "invalid warm slot id".to_string())?;
+    if let Some(w) = app.get_webview_window(&label) {
+        return Ok(w);
+    }
+    let fallback = WARM_SLOT_PROVIDER_FALLBACK
+        .get()
+        .cloned()
+        .unwrap_or(None);
+    let slot_for_cb = slot_id;
+    let mut wvb = tauri::WebviewWindowBuilder::new(
+        app,
+        label.clone(),
+        WebviewUrl::App("index.html".into()),
+    )
+    .title("Vaughan - dApp Warm Slot")
+    .inner_size(1200.0, 800.0)
+    .resizable(true)
+    .visible(false)
+    .initialization_script_for_all_frames(PROVIDER_INIT_SCRIPT);
+    if let Some(fallback_js) = fallback {
+        let fb = Arc::clone(&fallback_js);
+        wvb = wvb.on_page_load(move |window, payload| {
+            if payload.event() != PageLoadEvent::Finished {
+                return;
+            }
+            let url_owned = payload.url().to_string();
+            match payload.url().scheme() {
+                "about" | "data" | "blob" => return,
+                _ => {}
+            }
+            if url_owned.starts_with("tauri://") || url_owned.starts_with("asset://") {
+                return;
+            }
+            let invited = match payload.url().scheme() {
+                "https" => parse_allowlisted_navigation_url(&url_owned).is_ok(),
+                "http" => {
+                    let host = payload.url().host_str().unwrap_or("").to_lowercase();
+                    host == "localhost" || host == "127.0.0.1"
+                }
+                _ => false,
+            };
+            if invited {
+                let _ = window.eval(fb.as_str());
+            }
+            emit_wallet_event(
+                "slot_loaded",
+                serde_json::json!({
+                    "slot_id": slot_for_cb,
+                    "url": url_owned,
+                    "success": invited,
+                }),
+            );
+        });
+    }
+    wvb.build().map_err(|e| e.to_string())
+}
+
+fn warm_slot_navigate_hidden(
+    app: &tauri::AppHandle,
+    slot_id: u8,
+    url: String,
+) -> Result<(), String> {
+    let u = parse_allowlisted_navigation_url(&url)?;
+    let w = ensure_warm_slot_window(app, slot_id)?;
+    w.navigate(u).map_err(|e| e.to_string())?;
+    let _ = w.hide();
+    if let Ok(mut m) = WARM_SLOT_PING_FAIL_STREAK
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+    {
+        m.insert(slot_id, 0);
+    }
+    agent_browser_perf_log(
+        "P5",
+        "warm_slot_ping_reset",
+        serde_json::json!({ "slot_id": slot_id, "reason": "navigate_hidden" }),
+    );
+    Ok(())
+}
+
+fn warm_slot_show(app: &tauri::AppHandle, slot_id: u8) -> Result<(), String> {
+    let label = warm_slot_label(slot_id).ok_or_else(|| "invalid warm slot id".to_string())?;
+    let w = app
+        .get_webview_window(&label)
+        .ok_or_else(|| "warm slot window missing".to_string())?;
     let _ = w.show();
     let _ = w.set_focus();
+    if let Ok(mut m) = WARM_SLOT_PING_FAIL_STREAK
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+    {
+        m.insert(slot_id, 0);
+    }
+    agent_browser_perf_log(
+        "P5",
+        "warm_slot_ping_reset",
+        serde_json::json!({ "slot_id": slot_id, "reason": "show" }),
+    );
+    agent_browser_perf_log("P5", "warm_slot_claimed", serde_json::json!({ "slot_id": slot_id }));
+    emit_wallet_event("slot_claimed", serde_json::json!({ "slot_id": slot_id }));
     Ok(())
+}
+
+fn warm_slot_hide(app: &tauri::AppHandle, slot_id: u8) -> Result<(), String> {
+    let label = warm_slot_label(slot_id).ok_or_else(|| "invalid warm slot id".to_string())?;
+    let had_window = if let Some(w) = app.get_webview_window(&label) {
+        let _ = w.hide();
+        true
+    } else {
+        false
+    };
+    if had_window {
+        if let Ok(mut m) = WARM_SLOT_PING_FAIL_STREAK
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+        {
+            m.insert(slot_id, 0);
+        }
+    }
+    agent_browser_perf_log(
+        "P5",
+        "warm_slot_ping_reset",
+        serde_json::json!({ "slot_id": slot_id, "reason": if had_window { "hide" } else { "hide_no_window" } }),
+    );
+    emit_wallet_event("slot_hidden", serde_json::json!({ "slot_id": slot_id }));
+    Ok(())
+}
+
+fn warm_slot_destroy(app: &tauri::AppHandle, slot_id: u8) -> Result<(), String> {
+    let label = warm_slot_label(slot_id).ok_or_else(|| "invalid warm slot id".to_string())?;
+    if let Some(w) = app.get_webview_window(&label) {
+        let _ = w.close();
+    }
+    if let Ok(mut m) = WARM_SLOT_PING_FAIL_STREAK
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+    {
+        m.remove(&slot_id);
+    }
+    agent_browser_perf_log(
+        "P5",
+        "warm_slot_ping_clear",
+        serde_json::json!({ "slot_id": slot_id, "reason": "destroy" }),
+    );
+    emit_wallet_event("slot_destroyed", serde_json::json!({ "slot_id": slot_id }));
+    Ok(())
+}
+
+fn warm_slot_health_check(app: &tauri::AppHandle) {
+    let tracked_slots: Vec<u8> = WARM_SLOT_PING_FAIL_STREAK
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .ok()
+        .map(|m| m.keys().copied().collect())
+        .unwrap_or_default();
+    // #region agent log
+    agent_browser_perf_log(
+        "H2",
+        "health_check_tracked_slots",
+        serde_json::json!({
+            "tracked_count": tracked_slots.len(),
+            "tracked_slots": tracked_slots,
+        }),
+    );
+    // #endregion
+    for slot_id in tracked_slots {
+        let Some(label) = warm_slot_label(slot_id) else {
+            continue;
+        };
+        let Some(w) = app.get_webview_window(&label) else {
+            let mut was_tracked = false;
+            if let Ok(mut m) = WARM_SLOT_PING_FAIL_STREAK
+                .get_or_init(|| Mutex::new(HashMap::new()))
+                .lock()
+            {
+                was_tracked = m.remove(&slot_id).is_some();
+            }
+            if was_tracked {
+                // #region agent log
+                agent_browser_perf_log(
+                    "H3",
+                    "health_check_missing_tracked_window",
+                    serde_json::json!({ "slot_id": slot_id }),
+                );
+                // #endregion
+                agent_browser_perf_log(
+                    "P5",
+                    "warm_slot_ping_clear",
+                    serde_json::json!({ "slot_id": slot_id, "reason": "window_missing" }),
+                );
+                emit_wallet_event("slot_crashed", serde_json::json!({ "slot_id": slot_id }));
+            }
+            continue;
+        };
+        let ok = w.eval("1").is_ok();
+        if ok {
+            if let Ok(mut m) = WARM_SLOT_PING_FAIL_STREAK
+                .get_or_init(|| Mutex::new(HashMap::new()))
+                .lock()
+            {
+                m.insert(slot_id, 0);
+            }
+            agent_browser_perf_log(
+                "P5",
+                "warm_slot_ping_reset",
+                serde_json::json!({ "slot_id": slot_id, "reason": "health_ok" }),
+            );
+            continue;
+        }
+        let mut streak_now = 1u8;
+        if let Ok(mut m) = WARM_SLOT_PING_FAIL_STREAK
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+        {
+            let prev = *m.get(&slot_id).unwrap_or(&0);
+            streak_now = prev.saturating_add(1);
+            m.insert(slot_id, streak_now);
+        }
+        agent_browser_perf_log(
+            "P5",
+            "warm_slot_ping_fail",
+            serde_json::json!({ "slot_id": slot_id, "streak": streak_now }),
+        );
+        if streak_now >= 3 {
+            emit_wallet_event("slot_crashed", serde_json::json!({ "slot_id": slot_id }));
+            let _ = warm_slot_destroy(app, slot_id);
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -238,8 +786,22 @@ pub fn run() {
     let wallet_warm_shell = std::env::var("VAUGHAN_WALLET_WARM_SHELL")
         .map(|v| v == "1")
         .unwrap_or(false);
-    // Wallet-spawned browsers: keep the OS process alive when the user closes the window.
-    let intercept_wallet_close = wallet_spawned || wallet_warm_shell;
+    let warmup_hint_remaining_secs = std::env::var("VAUGHAN_WARMUP_HINT_REMAINING_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok());
+    let warmup_hint_is_rocket = std::env::var("VAUGHAN_WARMUP_HINT_IS_ROCKET")
+        .map(|v| v == "1")
+        .unwrap_or(false);
+    eprintln!(
+        "Vaughan warmup hint: remaining_secs={:?}, is_rocket={}",
+        warmup_hint_remaining_secs, warmup_hint_is_rocket
+    );
+    // Keep the OS process alive across window-close only for the wallet's *warm shell* (the
+    // long-lived child that hosts the main webview + hidden warm slots). `_new_window`
+    // children (spawned per TV-on click with `VAUGHAN_WALLET_SPAWNED=1` but without
+    // `VAUGHAN_WALLET_WARM_SHELL=1`) should close cleanly so we don't leak a full WebKit
+    // process every time the user closes a TV-opened dApp window.
+    let intercept_wallet_close = wallet_warm_shell;
     let use_trusted_chrome = external_top_level || wallet_spawned;
 
     eprintln!(
@@ -281,10 +843,9 @@ pub fn run() {
             navigate_trusted_dapp
         ])
         .setup(move |app| {
-            const PROVIDER_INIT: &str = include_str!("../provider_inject.js");
-
             let provider_fallback_eval: Option<Arc<String>> = if use_trusted_chrome {
-                let quoted = serde_json::to_string(PROVIDER_INIT).expect("serialize provider script");
+                let quoted = serde_json::to_string(PROVIDER_INIT_SCRIPT)
+                    .expect("serialize provider script");
                 Some(Arc::new(format!(
                     "(function(){{if(window.__VAUGHAN_ETH_INJECTED__)return;try{{eval({quoted});}}catch(e){{console.error('[Vaughan] provider fallback eval failed',e);}}}})();"
                 )))
@@ -292,18 +853,56 @@ pub fn run() {
                 None
             };
 
+            let _ = WARM_SLOT_PROVIDER_FALLBACK.set(provider_fallback_eval.clone());
+
             let mut wv = tauri::WebviewWindowBuilder::new(app, "main", webview_url)
                 .title("Vaughan - dApp Browser")
                 .inner_size(1200.0, 800.0)
                 .resizable(true)
-                .initialization_script_for_all_frames(PROVIDER_INIT);
+                .initialization_script_for_all_frames(PROVIDER_INIT_SCRIPT);
 
             if wallet_warm_shell {
                 wv = wv.visible(false);
             }
 
+            let warmup_bar_eval: Option<Arc<String>> =
+                if wallet_spawned && !wallet_warm_shell && warmup_hint_is_rocket {
+                    warmup_hint_remaining_secs
+                        .map(warmup_status_bar_script)
+                        .map(Arc::new)
+                } else {
+                    None
+                };
+
             if let Some(fallback_js) = provider_fallback_eval {
+                let warmup_bar_eval = warmup_bar_eval.clone();
                 wv = wv.on_page_load(move |window, payload| {
+                    if payload.event() == PageLoadEvent::Started {
+                        if let Some(ref warm_js) = warmup_bar_eval {
+                            let _ = window.eval(warm_js.as_str());
+                        }
+                        let last = PERF_LAST_NAV_AT_MS.load(Ordering::Relaxed);
+                        let now_ms = now_ms();
+                        if let Ok(mut trace) = NAV_PERF_TRACE.lock() {
+                            if trace.nav_at_ms == last && last > 0 {
+                                trace.page_start_ms = Some(now_ms);
+                            }
+                        }
+                        let since_nav_ms = if last > 0 && now_ms >= last {
+                            Some(now_ms - last)
+                        } else {
+                            None
+                        };
+                        agent_browser_perf_log(
+                            "P4",
+                            "main_page_load_started",
+                            serde_json::json!({
+                                "url": payload.url().to_string(),
+                                "since_nav_ms": since_nav_ms,
+                            }),
+                        );
+                        return;
+                    }
                     if payload.event() != PageLoadEvent::Finished {
                         return;
                     }
@@ -312,6 +911,32 @@ pub fn run() {
                         _ => {}
                     }
                     let _ = window.eval(fallback_js.as_str());
+                    if let Some(ref warm_js) = warmup_bar_eval {
+                        let _ = window.eval(warm_js.as_str());
+                    }
+                    let last = PERF_LAST_NAV_AT_MS.load(Ordering::Relaxed);
+                    let now_ms = now_ms();
+                    if let Ok(mut trace) = NAV_PERF_TRACE.lock() {
+                        if trace.nav_at_ms == last && last > 0 {
+                            trace.page_finish_ms = Some(now_ms);
+                        }
+                    }
+                    let since_nav_ms = if last > 0 && now_ms >= last {
+                        Some(now_ms - last)
+                    } else {
+                        None
+                    };
+                    // #region agent log
+                    agent_browser_perf_log(
+                        "P4",
+                        "main_page_load_finished",
+                        serde_json::json!({
+                            "url": payload.url().to_string(),
+                            "since_nav_ms": since_nav_ms,
+                        }),
+                    );
+                    // #endregion
+                    emit_nav_perf_summary_if_ready("page_finished");
                 });
             }
 
@@ -322,15 +947,60 @@ pub fn run() {
             if let Some(script) = pending_js.as_ref() {
                 wv = wv.initialization_script(script);
             }
+            if wallet_spawned && !wallet_warm_shell && warmup_hint_is_rocket {
+                let remaining = warmup_hint_remaining_secs.unwrap_or(90);
+                let warm_script = warmup_status_bar_script(remaining);
+                wv = wv.initialization_script(&warm_script);
+            }
+
+            #[cfg(desktop)]
+            {
+                let app_newwin = app.handle().clone();
+                wv = wv.on_new_window(move |url, _features| {
+                    let url_str = url.to_string();
+                    let allow = parse_allowlisted_navigation_url(&url_str).is_ok();
+                    if allow {
+                        if ON_NEWWIN_NAV_BUSY.swap(true, Ordering::AcqRel) {
+                        } else {
+                            let app_inner = app_newwin.clone();
+                            let u = url_str;
+                            if let Err(e) = app_newwin.run_on_main_thread(move || {
+                                let _clear_busy = ClearOnNewwinBusy;
+                                if let Err(err) = navigate_main_trusted_app(&app_inner, u, true) {
+                                    tracing::warn!(
+                                        target: "vaughan_ipc_browser",
+                                        err = %err,
+                                        "on_new_window same-webview navigate failed"
+                                    );
+                                }
+                            }) {
+                                ON_NEWWIN_NAV_BUSY.store(false, Ordering::Release);
+                                let _ = e;
+                            }
+                        }
+                    }
+                    NewWindowResponse::Deny
+                });
+            }
+
+            // Overlap socket connect + handshake with WebKit window creation so the wallet gate
+            // (`dapp_browser_ipc_handshake_seen`) clears sooner on warm start.
+            if let Some(pool) = ipc_pool_for_warm.as_ref() {
+                let p = Arc::clone(pool);
+                tauri::async_runtime::spawn(async move {
+                    p.warm_connections().await;
+                });
+            }
 
             #[cfg(desktop)]
             if use_trusted_chrome {
                 use tauri::menu::{Menu, MenuItemBuilder, Submenu};
 
+                // F5 is less often swallowed by dApp SPAs than Ctrl+R on Linux/Windows.
                 let reload_accel = if cfg!(target_os = "macos") {
                     "Super+R"
                 } else {
-                    "Control+R"
+                    "F5"
                 };
 
                 let back = MenuItemBuilder::with_id("vaughan/nav/back", "Back")
@@ -365,7 +1035,8 @@ pub fn run() {
                     } else if event.id() == "vaughan/nav/forward" {
                         w.eval("window.history.forward();")
                     } else if event.id() == "vaughan/nav/reload" {
-                        w.reload()
+                        hard_reload_main_webview(&w);
+                        Ok(())
                     } else {
                         Ok(())
                     };
@@ -375,11 +1046,39 @@ pub fn run() {
             wv.build()
                 .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
+            if wallet_spawned && !wallet_warm_shell && warmup_hint_is_rocket {
+                let warm_script = warmup_status_bar_script(warmup_hint_remaining_secs.unwrap_or(90));
+                let handle = app.handle().clone();
+                std::thread::Builder::new()
+                    .name("vaughan-warmup-bar-retry".into())
+                    .spawn(move || {
+                        // Retry aggressively for early-load races / SPA rewrites.
+                        for _ in 0..12 {
+                            std::thread::sleep(Duration::from_millis(750));
+                            let script = warm_script.clone();
+                            let h2 = handle.clone();
+                            let _ = handle.run_on_main_thread(move || {
+                                if let Some(w) = h2.get_webview_window("main") {
+                                    let _ = w.eval(script.as_str());
+                                }
+                            });
+                        }
+                    })
+                    .ok();
+            }
+
             if wallet_spawned {
                 let ctl = app.handle().clone();
                 if let Err(e) = std::thread::Builder::new()
                     .name("vaughan-wallet-stdin".into())
                     .spawn(move || {
+                        // #region agent log
+                        agent_browser_perf_log(
+                            "H8",
+                            "stdin_control_thread_started",
+                            serde_json::json!({}),
+                        );
+                        // #endregion
                         use std::io::BufReader;
                         let stdin = std::io::stdin();
                         let mut reader = BufReader::new(stdin.lock());
@@ -412,7 +1111,7 @@ pub fn run() {
                                     if t.is_empty() {
                                         continue;
                                     }
-                                    let Ok(cmd) = serde_json::from_str::<WalletStdinNavigate>(t) else {
+                                    let Ok(cmd) = serde_json::from_str::<WalletStdinControl>(t) else {
                                         tracing::warn!(
                                             target: "vaughan_ipc_browser",
                                             line = %t,
@@ -420,17 +1119,154 @@ pub fn run() {
                                         );
                                         continue;
                                     };
+                                    if let Some(name) = cmd.cmd.as_deref() {
+                                        // #region agent log
+                                        agent_browser_perf_log(
+                                            "H1",
+                                            "stdin_cmd_received",
+                                            serde_json::json!({
+                                                "cmd": name,
+                                                "slot_id": cmd.id,
+                                                "has_url": cmd.url.as_ref().map(|u| !u.is_empty()).unwrap_or(false),
+                                            }),
+                                        );
+                                        // #endregion
+                                        match name {
+                                            "create_webview" => {
+                                                let Some(slot_id) = cmd.id else { continue; };
+                                                let app_for_dispatch = ctl.clone();
+                                                let app_in_closure = ctl.clone();
+                                                let _ = app_for_dispatch.run_on_main_thread(move || {
+                                                    if ensure_warm_slot_window(&app_in_closure, slot_id).is_ok() {
+                                                        emit_wallet_event("slot_created", serde_json::json!({ "slot_id": slot_id }));
+                                                    }
+                                                });
+                                                continue;
+                                            }
+                                            "navigate" => {
+                                                let (Some(slot_id), Some(url)) = (cmd.id, cmd.url) else { continue; };
+                                                let app_for_dispatch = ctl.clone();
+                                                let app_in_closure = ctl.clone();
+                                                let _ = app_for_dispatch.run_on_main_thread(move || {
+                                                    let _ = warm_slot_navigate_hidden(&app_in_closure, slot_id, url);
+                                                });
+                                                continue;
+                                            }
+                                            "show" => {
+                                                let Some(slot_id) = cmd.id else { continue; };
+                                                let app_for_dispatch = ctl.clone();
+                                                let app_in_closure = ctl.clone();
+                                                let _ = app_for_dispatch.run_on_main_thread(move || {
+                                                    let _ = warm_slot_show(&app_in_closure, slot_id);
+                                                });
+                                                continue;
+                                            }
+                                            "hide" => {
+                                                let Some(slot_id) = cmd.id else { continue; };
+                                                let app_for_dispatch = ctl.clone();
+                                                let app_in_closure = ctl.clone();
+                                                let _ = app_for_dispatch.run_on_main_thread(move || {
+                                                    let _ = warm_slot_hide(&app_in_closure, slot_id);
+                                                });
+                                                continue;
+                                            }
+                                            "destroy" => {
+                                                let Some(slot_id) = cmd.id else { continue; };
+                                                let app_for_dispatch = ctl.clone();
+                                                let app_in_closure = ctl.clone();
+                                                let _ = app_for_dispatch.run_on_main_thread(move || {
+                                                    let _ = warm_slot_destroy(&app_in_closure, slot_id);
+                                                });
+                                                continue;
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                    if let Some(req) = cmd.warm_slot_navigate_hidden {
+                                        let app_for_dispatch = ctl.clone();
+                                        let app_in_closure = ctl.clone();
+                                        if let Err(e) = app_for_dispatch.run_on_main_thread(move || {
+                                            if let Err(e) = warm_slot_navigate_hidden(
+                                                &app_in_closure,
+                                                req.slot_id,
+                                                req.url,
+                                            ) {
+                                                tracing::warn!(
+                                                    target: "vaughan_ipc_browser",
+                                                    err = %e,
+                                                    "warm_slot_navigate_hidden failed"
+                                                );
+                                            }
+                                        }) {
+                                            tracing::warn!(
+                                                target: "vaughan_ipc_browser",
+                                                err = %e,
+                                                "run_on_main_thread failed for warm_slot_navigate_hidden"
+                                            );
+                                        }
+                                        continue;
+                                    }
+                                    if let Some(req) = cmd.warm_slot_show {
+                                        let app_for_dispatch = ctl.clone();
+                                        let app_in_closure = ctl.clone();
+                                        if let Err(e) = app_for_dispatch.run_on_main_thread(move || {
+                                            if let Err(e) = warm_slot_show(&app_in_closure, req.slot_id)
+                                            {
+                                                tracing::warn!(
+                                                    target: "vaughan_ipc_browser",
+                                                    err = %e,
+                                                    "warm_slot_show failed"
+                                                );
+                                            }
+                                        }) {
+                                            tracing::warn!(
+                                                target: "vaughan_ipc_browser",
+                                                err = %e,
+                                                "run_on_main_thread failed for warm_slot_show"
+                                            );
+                                        }
+                                        continue;
+                                    }
+                                    if let Some(req) = cmd.warm_slot_hide {
+                                        let app_for_dispatch = ctl.clone();
+                                        let app_in_closure = ctl.clone();
+                                        if let Err(e) = app_for_dispatch.run_on_main_thread(move || {
+                                            let _ = warm_slot_hide(&app_in_closure, req.slot_id);
+                                        }) {
+                                            tracing::warn!(
+                                                target: "vaughan_ipc_browser",
+                                                err = %e,
+                                                "run_on_main_thread failed for warm_slot_hide"
+                                            );
+                                        }
+                                        continue;
+                                    }
+                                    if let Some(req) = cmd.warm_slot_destroy {
+                                        let app_for_dispatch = ctl.clone();
+                                        let app_in_closure = ctl.clone();
+                                        if let Err(e) = app_for_dispatch.run_on_main_thread(move || {
+                                            let _ = warm_slot_destroy(&app_in_closure, req.slot_id);
+                                        }) {
+                                            tracing::warn!(
+                                                target: "vaughan_ipc_browser",
+                                                err = %e,
+                                                "run_on_main_thread failed for warm_slot_destroy"
+                                            );
+                                        }
+                                        continue;
+                                    }
                                     let Some(url) = cmd
                                         .navigate_trusted
                                         .filter(|s| !s.trim().is_empty())
                                     else {
                                         continue;
                                     };
+                                    let reveal = cmd.reveal;
                                     let app_for_dispatch = ctl.clone();
                                     let app_in_closure = ctl.clone();
                                     if let Err(e) = app_for_dispatch.run_on_main_thread(move || {
                                         if let Err(e) =
-                                            navigate_main_trusted_app(&app_in_closure, url)
+                                            navigate_main_trusted_app(&app_in_closure, url, reveal)
                                         {
                                             tracing::warn!(
                                                 target: "vaughan_ipc_browser",
@@ -466,13 +1302,6 @@ pub fn run() {
                 }
             }
 
-            if let Some(pool) = ipc_pool_for_warm.as_ref() {
-                let p = Arc::clone(pool);
-                tauri::async_runtime::spawn(async move {
-                    p.warm_connections().await;
-                });
-            }
-
             if external_top_level {
                 eprintln!(
                     "Vaughan dApp browser: main document is allowlisted external URL (no index.html shell)."
@@ -482,30 +1311,90 @@ pub fn run() {
             if cli.is_none() {
                 eprintln!("IPC config missing. Start with --ipc <endpoint> --token <token>");
             }
+            emit_wallet_event(
+                "ready",
+                serde_json::json!({ "max_webviews": WARM_SLOT_MVP_CAP }),
+            );
+
+            std::thread::Builder::new()
+                .name("vaughan-browser-heartbeat".into())
+                .spawn(|| loop {
+                    std::thread::sleep(Duration::from_secs(5));
+                    emit_wallet_event("heartbeat", serde_json::json!({}));
+                })
+                .ok();
+
+            let app_for_health = app.handle().clone();
+            std::thread::Builder::new()
+                .name("vaughan-warm-slot-health".into())
+                .spawn(move || loop {
+                    std::thread::sleep(Duration::from_secs(3));
+                    let app_dispatch = app_for_health.clone();
+                    let app_inner = app_for_health.clone();
+                    let _ = app_dispatch.run_on_main_thread(move || {
+                        warm_slot_health_check(&app_inner);
+                    });
+                })
+                .ok();
+
             Ok(())
         })
         .build(tauri::generate_context!())
         .expect("error building tauri application")
         .run(move |app, event| {
+            if let tauri::RunEvent::ExitRequested { ref api, .. } = event {
+                if intercept_wallet_close {
+                    api.prevent_exit();
+                    return;
+                }
+            }
             // `CloseRequested` is not delivered through `WebviewWindow::on_window_event` on this path;
             // handle it from `RunEvent` so `prevent_close()` runs before Wry decides to tear the window down.
             // Defer `hide()` to the next main-loop turn: calling GTK hide synchronously inside the close
             // handler has caused heap corruption on Linux (glibc "corrupted double-linked list").
-            if !intercept_wallet_close {
-                return;
-            }
             if let tauri::RunEvent::WindowEvent { label, event, .. } = event {
-                if label != "main" {
+                const DISCONNECT_ETH: &str = "try{if(window.ethereum&&typeof window.ethereum.disconnect==='function'){var d=window.ethereum.disconnect();if(d&&typeof d.then==='function')d.catch(function(){});}}catch(e){}";
+
+                if label == "main" {
+                    if !intercept_wallet_close {
+                        return;
+                    }
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        let handle = app.clone();
+                        let _ = app.run_on_main_thread(move || {
+                            if let Some(w) = handle.get_webview_window("main") {
+                                let _ = w.eval(DISCONNECT_ETH);
+                                let _ = w.hide();
+                            }
+                        });
+                    }
                     return;
                 }
-                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                    api.prevent_close();
-                    let handle = app.clone();
-                    let _ = app.run_on_main_thread(move || {
-                        if let Some(w) = handle.get_webview_window("main") {
-                            let _ = w.hide();
-                        }
-                    });
+
+                // Rocket warm-slot windows: hide instead of destroy so the parent can refill the slot.
+                if let Some(slot_id) = label
+                    .strip_prefix("warm-slot-")
+                    .and_then(|s| s.parse::<u8>().ok())
+                {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        // #region agent log
+                        agent_browser_perf_log(
+                            "H4",
+                            "slot_close_requested",
+                            serde_json::json!({ "slot_id": slot_id, "label": label }),
+                        );
+                        // #endregion
+                        api.prevent_close();
+                        let handle = app.clone();
+                        let slot_label = label.to_string();
+                        let _ = app.run_on_main_thread(move || {
+                            if let Some(w) = handle.get_webview_window(&slot_label) {
+                                let _ = w.eval(DISCONNECT_ETH);
+                            }
+                            let _ = warm_slot_hide(&handle, slot_id);
+                        });
+                    }
                 }
             }
         });
@@ -515,7 +1404,7 @@ pub fn run() {
 /// Use for in-app navigation (shell or external) without respawning; Rust rejects non-listed URLs.
 #[tauri::command]
 fn navigate_trusted_dapp(app: tauri::AppHandle, url: String) -> Result<(), String> {
-    navigate_main_trusted_app(&app, url)
+    navigate_main_trusted_app(&app, url, true)
 }
 
 /// TOPNAV spike: invoked from JS when `VAUGHAN_SPIKE_EXTERNAL=1` and the spike init script is injected.
@@ -544,7 +1433,35 @@ async fn ipc_request(
 
     let op_timeout = Duration::from_secs(10);
     let id = IPC_REQ_ID.fetch_add(1, Ordering::Relaxed);
+    let nav_ms = PERF_LAST_NAV_AT_MS.load(Ordering::Relaxed);
+    let first_rpc_for_nav = if nav_ms == 0 {
+        false
+    } else {
+        let logged_for = PERF_FIRST_RPC_LOGGED_FOR_NAV_AT_MS.load(Ordering::Acquire);
+        logged_for != nav_ms
+            && PERF_FIRST_RPC_LOGGED_FOR_NAV_AT_MS
+                .compare_exchange(logged_for, nav_ms, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+    };
     let env = pool.request(id, request, op_timeout).await?;
+
+    if first_rpc_for_nav {
+        let now_ms = now_ms();
+        if let Ok(mut trace) = NAV_PERF_TRACE.lock() {
+            if trace.nav_at_ms == nav_ms {
+                trace.first_ipc_ms = Some(now_ms);
+            }
+        }
+        agent_browser_perf_log(
+            "P4",
+            "first_ipc_after_nav",
+            serde_json::json!({
+                "request_id": id,
+                "since_nav_ms": if now_ms >= nav_ms { Some(now_ms - nav_ms) } else { None },
+            }),
+        );
+        emit_nav_perf_summary_if_ready("first_ipc");
+    }
 
     Ok(env.body)
 }
