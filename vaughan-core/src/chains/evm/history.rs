@@ -12,7 +12,6 @@ use crate::error::WalletError;
 #[derive(Debug, Deserialize)]
 struct ExplorerResponse<T> {
     status: String,
-    #[allow(dead_code)]
     message: String,
     result: T,
 }
@@ -31,8 +30,6 @@ struct ExplorerTx {
     // ERC20 fields (present in tokentx)
     token_symbol: Option<String>,
     contract_address: Option<String>,
-    // Not used yet; reserved for later formatting improvements.
-    #[allow(dead_code)]
     token_decimal: Option<String>,
 }
 
@@ -94,6 +91,7 @@ pub async fn fetch_txlist(
             token_symbol: None,
             token_address: None,
             is_token_transfer: false,
+            token_decimals: None,
         })
         .collect())
 }
@@ -143,6 +141,10 @@ pub async fn fetch_tokentx(
             token_symbol: t.token_symbol,
             token_address: t.contract_address,
             is_token_transfer: true,
+            token_decimals: t
+                .token_decimal
+                .as_deref()
+                .and_then(|s| s.parse::<u8>().ok()),
         })
         .collect())
 }

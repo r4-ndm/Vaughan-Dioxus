@@ -157,6 +157,7 @@ mod tests {
                 token_symbol: None,
                 token_address: None,
                 is_token_transfer: false,
+                token_decimals: None,
             }])
         }
 
@@ -179,6 +180,7 @@ mod tests {
                 token_symbol: Some("FAKE".into()),
                 token_address: Some("0xtoken".into()),
                 is_token_transfer: true,
+                token_decimals: Some(18),
             }])
         }
 

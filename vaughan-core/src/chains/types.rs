@@ -116,6 +116,9 @@ pub struct TxRecord {
     pub token_symbol: Option<String>,
     pub token_address: Option<String>,
     pub is_token_transfer: bool,
+    /// ERC-20 decimals from explorer (`tokenDecimal`) when `is_token_transfer` is true.
+    #[serde(default)]
+    pub token_decimals: Option<u8>,
 }
 
 /// Transaction status

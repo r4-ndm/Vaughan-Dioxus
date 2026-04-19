@@ -1289,8 +1289,7 @@ pub fn open_trusted_dapp_url_prefer_warm_window(url_str: &str) -> Result<(), Str
 /// so the first dApp open avoids process + WebKit cold start.
 /// On drop, stops the health monitor and terminates any running browser child.
 pub struct BrowserProcessGuard {
-    /// Keeps the IPC accept loop alive for the dApp browser.
-    #[allow(dead_code)]
+    /// Holds the wallet IPC server until this guard drops (stops the accept loop).
     ipc_server: Option<WalletIpcServer>,
     browser_monitor_stop: Arc<AtomicBool>,
     browser_monitor: Option<thread::JoinHandle<()>>,
@@ -1457,6 +1456,7 @@ impl Drop for BrowserProcessGuard {
                 }
             }
         }
+        drop(self.ipc_server.take());
     }
 }
 
