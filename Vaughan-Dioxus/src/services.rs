@@ -12,8 +12,7 @@ pub struct AppServices {
     pub wallet_state: Arc<WalletState>,
     pub network_service: Arc<NetworkService>,
     pub history_service: Arc<HistoryService>,
-    /// Full `state.json` in memory; single source of truth for persisted app state (accounts today; networks/tokens next).
-    #[allow(dead_code)] // exposed for upcoming prefs/network persistence wiring
+    /// Full `state.json` in memory; single source of truth for persisted app state.
     pub persistence: Arc<PersistenceHandle>,
     pub account_manager: Arc<AccountManager>,
     pub token_manager: Arc<TokenManager>,

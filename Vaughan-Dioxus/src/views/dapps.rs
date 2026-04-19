@@ -234,8 +234,8 @@ fn PulsexFooterTrailing(
 }
 
 /// Single dApp tile rendered in the dApps grid. Used for both the curated
-/// `TrustedDapp` list and user-added custom entries; per-card extras (like the
-/// PulseX local install/run controls) come in via `children`.
+/// `TrustedDapp` list and user-added custom entries. Extra footer actions (e.g.
+/// PulseX local controls) render in `footer_trailing` beside the rocket button.
 #[component]
 fn DappCard(
     name: String,
@@ -249,7 +249,6 @@ fn DappCard(
     on_remove: Callback<()>,
     on_toggle_fast: Callback<()>,
     footer_trailing: Element,
-    children: Element,
 ) -> Element {
     let fav = google_favicon_url_for_dapp(&url).unwrap_or_default();
     let host = host_label(&url);
@@ -325,7 +324,6 @@ fn DappCard(
                         }
                     }
                 }
-                {children}
             }
         }
     }
@@ -689,7 +687,6 @@ pub fn DappsView(on_back: Callback<()>) -> Element {
                                     );
                                 },
                                 footer_trailing: rsx! {},
-                                children: rsx! {},
                             }
                         }
                     }
@@ -751,7 +748,6 @@ pub fn DappsView(on_back: Callback<()>) -> Element {
                                     );
                                 },
                                 footer_trailing,
-                                children: rsx! {},
                             }
                         }
                     }
