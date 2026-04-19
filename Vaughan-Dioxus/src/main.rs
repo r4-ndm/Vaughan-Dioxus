@@ -3,6 +3,7 @@
 mod app;
 mod browser;
 mod chain_bootstrap;
+mod pulsex_local;
 mod components;
 mod dapp_approval;
 mod services;
@@ -53,6 +54,7 @@ fn main() {
         tracing::info!(target: "vaughan_app", "shared services ready");
 
         let _browser_guard = browser::BrowserProcessGuard::launch_if_available(services);
+        let _pulsex_guard = pulsex_local::PulsexServerGuard;
         tracing::info!(
             target: "vaughan_app",
             "dApp browser IPC armed (hidden warm shell may start when the browser binary is present)"

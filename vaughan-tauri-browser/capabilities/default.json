@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Shell UI, dApp iframes, and allow-listed HTTPS origins may invoke the wallet IPC bridge and allowlisted main-webview navigation (parity with wallet state.json + browser.rs).",
-  "windows": ["main"],
+  "windows": ["main", "warm-slot-*"],
   "permissions": [
     "core:default",
     "allow-ipc-request",

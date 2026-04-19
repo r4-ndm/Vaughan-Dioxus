@@ -3,6 +3,9 @@
 .tmp-tests/
 .tmp-build/
 
+# PulseX native helper: keep manifest + tarball (include_str!/include_bytes!), drop runtime extract dirs
+/PulseX/_extracted_*/
+
 # Local secrets (never commit)
 .env
 .env.*

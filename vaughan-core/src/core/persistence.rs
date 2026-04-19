@@ -124,6 +124,18 @@ pub struct UserPreferences {
     pub dapp_usage_v1: HashMap<String, DappUsageStats>,
     #[serde(default)]
     pub fast_dapps_by_chain_v1: HashMap<String, Vec<String>>,
+    /// Manifest-driven native helpers (e.g. local PulseX server binary path + version).
+    #[serde(default)]
+    pub native_dapps_v1: HashMap<String, NativeDappInstallRecord>,
+}
+
+/// Persisted install metadata for a downloadable native dApp (see `native_dapps` module).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NativeDappInstallRecord {
+    pub installed_version: String,
+    pub binary_path: PathBuf,
+    #[serde(default)]
+    pub archive_sha256: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

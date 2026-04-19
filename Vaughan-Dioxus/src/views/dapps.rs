@@ -8,8 +8,10 @@ use url::Url;
 
 use vaughan_core::core::WalletState;
 use vaughan_core::monitoring::BalanceEvent;
+use vaughan_core::native_dapps;
 
 use crate::app::AppRuntime;
+use crate::pulsex_local;
 use crate::browser::{
     self, format_user_dapp_url, google_favicon_url_for_dapp, trusted_dapp_visible_on_chain,
     validate_whitelisted_dapp_url, TrustedDapp, TRUSTED_DAPP_ENTRIES,
@@ -18,6 +20,14 @@ use crate::chain_bootstrap::refresh_evm_adapter_for_active_network;
 use crate::components::{AccountOption, AccountSelector, NetworkOption, NetworkSelector};
 use crate::dapp_approval::{broker, PendingSignMessage, PendingSignTransaction};
 use crate::services::AppServices;
+
+/// Curated entry for loopback PulseX (`browser.rs`); controls use the same URL key.
+const PULSEX_LOCAL_URL: &str = "http://127.0.0.1:3691";
+const PULSEX_SERVER_BIND: &str = "127.0.0.1:3691";
+
+fn pulsex_install_supported() -> bool {
+    cfg!(all(target_os = "linux", target_arch = "x86_64"))
+}
 
 #[derive(Clone, PartialEq, Eq)]
 struct CustomDappEntry {
@@ -60,6 +70,13 @@ pub fn DappsView(on_back: Callback<()>) -> Element {
     let pending_tx = use_signal(|| broker().pending_sign_transaction());
     let mut dapp_open_error = use_signal(|| None::<String>);
 
+    let pulsex_installed_ver = use_signal(|| None::<String>);
+    let pulsex_running = use_signal(|| false);
+    let pulsex_update_available = use_signal(|| false);
+    let pulsex_busy = use_signal(|| false);
+    let pulsex_toast = use_signal(|| None::<String>);
+    let pulsex_poll_booted = use_signal(|| false);
+
     let mut refresh = {
         let mut pending_message = pending_message;
         let mut pending_tx = pending_tx;
@@ -93,6 +110,35 @@ pub fn DappsView(on_back: Callback<()>) -> Element {
                 .cloned()
                 .unwrap_or_default();
             fast_dapp_keys.set(fast_for_chain.into_iter().take(6).collect());
+        }
+    });
+
+    use_effect({
+        let services = services.clone();
+        let mut pulsex_installed_ver = pulsex_installed_ver;
+        let mut pulsex_running = pulsex_running;
+        let mut pulsex_update_available = pulsex_update_available;
+        let mut pulsex_poll_booted = pulsex_poll_booted;
+        move || {
+            if pulsex_poll_booted() {
+                return;
+            }
+            pulsex_poll_booted.set(true);
+            let persistence = services.persistence.clone();
+            spawn(async move {
+                loop {
+                    let rec = native_dapps::pulsex_record(&persistence);
+                    pulsex_installed_ver.set(rec.as_ref().map(|r| r.installed_version.clone()));
+                    pulsex_running.set(pulsex_local::is_pulsex_running());
+                    if let Ok(m) =
+                        native_dapps::parse_manifest_json(native_dapps::embedded_manifest_str())
+                    {
+                        pulsex_update_available
+                            .set(native_dapps::pulsex_update_available(&m, rec.as_ref()));
+                    }
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }
+            });
         }
     });
 
@@ -581,6 +627,169 @@ pub fn DappsView(on_back: Callback<()>) -> Element {
                                                     } else {
                                                         "height: 100%; width: 35%; background: rgba(214,164,38,0.95);".to_string()
                                                     }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if entry.url == PULSEX_LOCAL_URL {
+                                        div { style: "margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 6px;",
+                                            p { class: "muted", style: "margin: 0; font-size: 10px; line-height: 1.35;",
+                                                if pulsex_install_supported() {
+                                                    "Option B: public `pulsex-manifest.json` + SHA-256; binary lives under your app data directory."
+                                                } else {
+                                                    "Automated download targets Linux x86-64. On other systems, run `pulsex-server` yourself."
+                                                }
+                                            }
+                                            if pulsex_install_supported() {
+                                                div { style: "display: flex; flex-wrap: wrap; gap: 6px; align-items: center;",
+                                                    if pulsex_installed_ver.read().is_none() {
+                                                        button {
+                                                            class: "btn",
+                                                            disabled: *pulsex_busy.read(),
+                                                            onclick: {
+                                                                let services = services.clone();
+                                                                let mut pulsex_busy = pulsex_busy;
+                                                                let mut pulsex_toast = pulsex_toast;
+                                                                move |e| {
+                                                                    e.stop_propagation();
+                                                                    if *pulsex_busy.read() {
+                                                                        return;
+                                                                    }
+                                                                    pulsex_busy.set(true);
+                                                                    pulsex_toast.set(None);
+                                                                    let services = services.clone();
+                                                                    spawn(async move {
+                                                                        let res = async {
+                                                                            let m = native_dapps::load_pulsex_manifest(true).await?;
+                                                                            native_dapps::download_install_pulsex_for_current_target(
+                                                                                &m,
+                                                                                services.persistence.clone(),
+                                                                            )
+                                                                            .await?;
+                                                                            Ok(()) as Result<(), vaughan_core::error::WalletError>
+                                                                        }
+                                                                        .await;
+                                                                        pulsex_busy.set(false);
+                                                                        match res {
+                                                                            Ok(()) => pulsex_toast.set(Some(
+                                                                                "Installed and verified.".into(),
+                                                                            )),
+                                                                            Err(err) => pulsex_toast.set(Some(err.to_string())),
+                                                                        }
+                                                                    });
+                                                                }
+                                                            },
+                                                            "Install"
+                                                        }
+                                                    } else if *pulsex_update_available.read() {
+                                                        button {
+                                                            class: "btn",
+                                                            disabled: *pulsex_busy.read(),
+                                                            onclick: {
+                                                                let services = services.clone();
+                                                                let mut pulsex_busy = pulsex_busy;
+                                                                let mut pulsex_toast = pulsex_toast;
+                                                                move |e| {
+                                                                    e.stop_propagation();
+                                                                    if *pulsex_busy.read() {
+                                                                        return;
+                                                                    }
+                                                                    pulsex_busy.set(true);
+                                                                    pulsex_toast.set(None);
+                                                                    let services = services.clone();
+                                                                    spawn(async move {
+                                                                        let res = async {
+                                                                            let m = native_dapps::load_pulsex_manifest(true).await?;
+                                                                            native_dapps::download_install_pulsex_for_current_target(
+                                                                                &m,
+                                                                                services.persistence.clone(),
+                                                                            )
+                                                                            .await?;
+                                                                            Ok(()) as Result<(), vaughan_core::error::WalletError>
+                                                                        }
+                                                                        .await;
+                                                                        pulsex_busy.set(false);
+                                                                        match res {
+                                                                            Ok(()) => pulsex_toast.set(Some(
+                                                                                "Updated.".into(),
+                                                                            )),
+                                                                            Err(err) => pulsex_toast.set(Some(err.to_string())),
+                                                                        }
+                                                                    });
+                                                                }
+                                                            },
+                                                            "Update"
+                                                        }
+                                                    }
+                                                    if pulsex_installed_ver.read().is_some() {
+                                                        if *pulsex_running.read() {
+                                                            button {
+                                                                class: "btn",
+                                                                disabled: *pulsex_busy.read(),
+                                                                onclick: {
+                                                                    let mut pulsex_busy = pulsex_busy;
+                                                                    let mut pulsex_toast = pulsex_toast;
+                                                                    move |e| {
+                                                                        e.stop_propagation();
+                                                                        if *pulsex_busy.read() {
+                                                                            return;
+                                                                        }
+                                                                        pulsex_busy.set(true);
+                                                                        pulsex_local::stop_pulsex_local();
+                                                                        pulsex_busy.set(false);
+                                                                        pulsex_toast.set(Some("Server stopped.".into()));
+                                                                    }
+                                                                },
+                                                                "Stop server"
+                                                            }
+                                                        } else {
+                                                            button {
+                                                                class: "btn",
+                                                                disabled: *pulsex_busy.read(),
+                                                                onclick: {
+                                                                    let services = services.clone();
+                                                                    let mut pulsex_busy = pulsex_busy;
+                                                                    let mut pulsex_toast = pulsex_toast;
+                                                                    move |e| {
+                                                                        e.stop_propagation();
+                                                                        if *pulsex_busy.read() {
+                                                                            return;
+                                                                        }
+                                                                        let Some(rec) =
+                                                                            native_dapps::pulsex_record(&services.persistence)
+                                                                        else {
+                                                                            pulsex_toast.set(Some(
+                                                                                "Install the local server first.".into(),
+                                                                            ));
+                                                                            return;
+                                                                        };
+                                                                        pulsex_busy.set(true);
+                                                                        pulsex_toast.set(None);
+                                                                        let path = rec.binary_path.clone();
+                                                                        // Run synchronously on the UI click path: `dioxus::spawn` async blocks
+                                                                        // without await were unreliable here and could leave `pulsex_busy` stuck.
+                                                                        let r = pulsex_local::start_pulsex_local(
+                                                                            &path,
+                                                                            PULSEX_SERVER_BIND,
+                                                                        );
+                                                                        pulsex_busy.set(false);
+                                                                        match r {
+                                                                            Ok(()) => pulsex_toast.set(Some(
+                                                                                "Server started.".into(),
+                                                                            )),
+                                                                            Err(msg) => pulsex_toast.set(Some(msg)),
+                                                                        }
+                                                                    }
+                                                                },
+                                                                "Start server"
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            if let Some(note) = pulsex_toast.read().as_ref() {
+                                                p { style: "margin: 0; font-size: 10px; color: var(--muted-foreground);",
+                                                    "{note}"
                                                 }
                                             }
                                         }

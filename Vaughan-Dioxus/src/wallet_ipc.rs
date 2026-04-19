@@ -316,10 +316,48 @@ fn handle_connection(
                         }
                     }
                 }
-                IpcRequest::SignTypedData(_) | IpcRequest::SwitchChain(_) => IpcResponse::Error {
+                IpcRequest::SignTypedData(_) => IpcResponse::Error {
                     code: 4200,
                     message: "Method not implemented in wallet yet".to_string(),
                 },
+                IpcRequest::SwitchChain(payload) => {
+                    let chain_id = payload.chain_id;
+                    let networks = runtime.block_on(services.network_service.list_networks());
+                    if let Some(net) = networks.into_iter().find(|n| n.chain_id == chain_id) {
+                        if let Err(e) =
+                            runtime.block_on(services.network_service.set_active_network(&net.id))
+                        {
+                            IpcResponse::Error {
+                                code: 4200,
+                                message: e.to_string(),
+                            }
+                        } else {
+                            let id = net.id.clone();
+                            if let Err(e) = runtime.block_on(services.persistence.update_and_save(
+                                |st| {
+                                    st.active_network_id = Some(id);
+                                },
+                            )) {
+                                tracing::warn!(
+                                    target: "vaughan_ipc",
+                                    err = %e,
+                                    "SwitchChain: failed to persist active network"
+                                );
+                            }
+                            IpcResponse::NetworkInfo(NetworkInfo {
+                                chain_id: net.chain_id,
+                                name: net.name,
+                            })
+                        }
+                    } else {
+                        IpcResponse::Error {
+                            code: 4902,
+                            message: format!(
+                                "Chain id {chain_id} is not in Vaughan's network list. Add it in Settings, then retry."
+                            ),
+                        }
+                    }
+                }
             };
 
             let resp = IpcEnvelope { id: req.id, body };

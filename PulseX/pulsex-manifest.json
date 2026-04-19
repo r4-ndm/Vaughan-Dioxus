@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "id": "pulsex-local",
+  "display_name": "PulseX Server (local)",
+  "default_bind": "127.0.0.1:3691",
+  "manifest_url": "https://raw.githubusercontent.com/r4-ndm/Vaughan-Dioxus/main/PulseX/pulsex-manifest.json",
+  "releases": [
+    {
+      "version": "1.1.4",
+      "artifacts": [
+        {
+          "target": "linux_x86_64",
+          "url": "https://raw.githubusercontent.com/r4-ndm/Vaughan-Dioxus/main/PulseX/pulsex-server_1.1.4_linux_amd64.tar.gz",
+          "archive_sha256": "10fcdbda75d4ce9e1975b48c017f3710df877268bde629c785ac6e030271c516"
+        }
+      ]
+    }
+  ]
+}

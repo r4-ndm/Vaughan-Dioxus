@@ -1,5 +1,7 @@
 // Injected into every frame (shell, allowlisted external top-level, cross-origin iframes)
-// via Tauri `initialization_script_for_all_frames`, so dApps see window.ethereum.
+// via Tauri `initialization_script_for_all_frames`. Discoverable via EIP-6963 only —
+// `window.ethereum` is intentionally not set so wagmi/ethers register exactly one
+// connector (see the long comment near the EIP-6963 announcement for rationale).
 //
 // Bridge selection (topnav-3):
 // - Use direct `__TAURI__.core.invoke` / `invoke` in this frame when available (shell or WebviewUrl::External top).
@@ -235,8 +237,9 @@
     var code = Number(payload && payload.code);
     var msg = (payload && payload.message) || fallbackMsg;
     if (
-      [4001, 4100, 4200, 4900, -32600, -32601, -32602, -32603].indexOf(code) !==
-      -1
+      [4001, 4100, 4200, 4900, 4902, -32600, -32601, -32602, -32603].indexOf(
+        code
+      ) !== -1
     ) {
       return makeEthRpcError(code, msg);
     }
@@ -338,6 +341,13 @@
   var firstConnectEmitted = false;
   /** Until true, eth_accounts returns [] so dApp "disconnect" sticks (wagmi/Uniswap poll eth_accounts). */
   var sessionAuthorized = false;
+  /**
+   * After the user (or dApp) calls `disconnect()` / revoke, block `eth_requestAccounts` from
+   * immediately re-binding the site — otherwise we refetch accounts from IPC and look "connected"
+   * again (localhost DEX / wagmi felt like disconnect did nothing).
+   * Cleared on full page reload (new provider init) or when `wallet_requestPermissions` runs.
+   */
+  var denyEthRequestAccountsUntilReload = false;
   var disconnectHoldUntilMs = 0;
   var lastRevokeAtMs = 0;
   var inflightGetAccounts = null;
@@ -348,43 +358,167 @@
   var lastNetworkValue = null;
   var IPC_CACHE_MS = 250;
   var DISCONNECT_HOLD_MS = 2000;
+  /** Same-tab sync: each iframe has its own JS `sessionAuthorized`. */
+  var DISCONNECT_BC = "vaughan_wallet_disconnect_v1";
 
-  function clearDappSession(reason) {
-    sessionAuthorized = false;
-    disconnectHoldUntilMs = Date.now() + DISCONNECT_HOLD_MS;
-    inflightGetAccounts = null;
-    inflightGetNetworkInfo = null;
-    currentAccounts = [];
-    firstConnectEmitted = false;
-    emitter.emit("accountsChanged", []);
-    emitter.emit(
-      "disconnect",
-      reason || { code: 4900, message: "Disconnected from dApp" }
-    );
-    syncLegacy();
+  function setDisconnectGate(active) {
+    /** In-memory only — a previous version used localStorage and bricked `eth_requestAccounts` across sites until cleared. */
+    denyEthRequestAccountsUntilReload = !!active;
   }
 
-  function sessionIsDisconnected() {
-    return (
+  function disconnectGateActive() {
+    return !!denyEthRequestAccountsUntilReload;
+  }
+
+  try {
+    localStorage.removeItem("__vaughan_disconnect_gate_v1");
+  } catch (e) {}
+
+  /**
+   * Prevent synchronous recursion: wagmi/web3-react listen to `accountsChanged([])`
+   * and call `provider.disconnect()` synchronously. `provider.disconnect` is `async`
+   * but its body runs sync before the Promise tick, so emit→listener→disconnect→emit
+   * blew the stack and froze LibertySwap (and similar wagmi-based dApps).
+   */
+  var inDisconnectFlush = false;
+  function applySessionDisconnect(reason) {
+    if (inDisconnectFlush) return;
+    var alreadyDisconnected =
       !sessionAuthorized &&
       (!currentAccounts || currentAccounts.length === 0) &&
-      !firstConnectEmitted
-    );
+      disconnectGateActive();
+    if (alreadyDisconnected) {
+      return;
+    }
+    inDisconnectFlush = true;
+    try {
+      sessionAuthorized = false;
+      setDisconnectGate(true);
+      disconnectHoldUntilMs = Date.now() + DISCONNECT_HOLD_MS;
+      inflightGetAccounts = null;
+      inflightGetNetworkInfo = null;
+      lastAccountsValue = null;
+      lastAccountsAtMs = 0;
+      currentAccounts = [];
+      firstConnectEmitted = false;
+      wipeWalletConnectorStorage();
+      emitter.emit("accountsChanged", []);
+      emitter.emit(
+        "disconnect",
+        reason || { code: 4900, message: "Disconnected from dApp" }
+      );
+      syncLegacy();
+    } finally {
+      inDisconnectFlush = false;
+    }
   }
 
+  /**
+   * Wipes wagmi/RainbowKit/Web3Modal cached connector state so dApps that register
+   * BOTH a legacy `window.ethereum` injected connector AND an EIP-6963 connector
+   * (PulseX/Uniswap-style) don't keep one of them "connected" in storage and
+   * require a second disconnect click. Idempotent and same-origin only.
+   */
+  function wipeWalletConnectorStorage() {
+    var WIPE_PREFIXES = [
+      "wagmi.",
+      "@rainbow-me/",
+      "rk-",
+      "@w3m/",
+      "W3M_",
+      "WALLETCONNECT_",
+      "wc@",
+      "@appkit/",
+      "appkit.",
+    ];
+    var WIPE_EXACT = [
+      "WALLETCONNECT_DEEPLINK_CHOICE",
+      "walletconnect",
+      "vault.walletconnect",
+    ];
+    function shouldWipe(k) {
+      if (!k) return false;
+      for (var i = 0; i < WIPE_EXACT.length; i++) {
+        if (k === WIPE_EXACT[i]) return true;
+      }
+      for (var j = 0; j < WIPE_PREFIXES.length; j++) {
+        if (k.indexOf(WIPE_PREFIXES[j]) === 0) return true;
+      }
+      return false;
+    }
+    function wipe(store) {
+      try {
+        var keys = [];
+        for (var i = 0; i < store.length; i++) {
+          var k = store.key(i);
+          if (shouldWipe(k)) keys.push(k);
+        }
+        for (var n = 0; n < keys.length; n++) {
+          try {
+            store.removeItem(keys[n]);
+          } catch (e) {}
+        }
+      } catch (e) {}
+    }
+    try {
+      wipe(window.localStorage);
+    } catch (e) {}
+    try {
+      wipe(window.sessionStorage);
+    } catch (e) {}
+  }
+
+  function broadcastSessionDisconnect(reason) {
+    try {
+      if (!window.__vaughan_disc_bc) {
+        window.__vaughan_disc_bc = new BroadcastChannel(DISCONNECT_BC);
+      }
+      window.__vaughan_disc_bc.postMessage({
+        type: "session_disconnect",
+        reason: reason,
+      });
+    } catch (e) {}
+  }
+
+  function broadcastSessionConnect() {
+    try {
+      if (!window.__vaughan_disc_bc) {
+        window.__vaughan_disc_bc = new BroadcastChannel(DISCONNECT_BC);
+      }
+      window.__vaughan_disc_bc.postMessage({ type: "session_connect" });
+    } catch (e) {}
+  }
+
+  function clearDappSession(reason) {
+    applySessionDisconnect(reason);
+    broadcastSessionDisconnect(reason);
+  }
+
+  try {
+    if (!window.__vaughan_disc_bc_listener) {
+      window.__vaughan_disc_bc_listener = new BroadcastChannel(DISCONNECT_BC);
+      window.__vaughan_disc_bc_listener.onmessage = function (ev) {
+        if (!ev.data) return;
+        if (ev.data.type === "session_connect") {
+          setDisconnectGate(false);
+          return;
+        }
+        if (ev.data.type !== "session_disconnect") return;
+        var hadSession =
+          sessionAuthorized ||
+          (currentAccounts && currentAccounts.length > 0);
+        var gateOn = disconnectGateActive();
+        if (!hadSession && gateOn) {
+          return;
+        }
+        applySessionDisconnect(ev.data.reason);
+      };
+    }
+  } catch (e) {}
+
   function emitDisconnect(err) {
-    currentAccounts = [];
-    currentChainIdHex = null;
-    firstConnectEmitted = false;
-    sessionAuthorized = false;
-    disconnectHoldUntilMs = Date.now() + DISCONNECT_HOLD_MS;
-    inflightGetAccounts = null;
-    inflightGetNetworkInfo = null;
-    emitter.emit(
-      "disconnect",
-      err || { code: 4100, message: "Wallet disconnected" }
-    );
-    syncLegacy();
+    /** Same as explicit disconnect: wagmi needs `accountsChanged([])` + tab broadcast. */
+    clearDappSession(err);
   }
 
   function syncLegacy() {
@@ -480,6 +614,7 @@
       return this.request({ method: "eth_requestAccounts" });
     },
     isConnected: function () {
+      if (disconnectGateActive()) return false;
       return !!(
         sessionAuthorized &&
         currentAccounts &&
@@ -529,8 +664,19 @@
       var m = (method || "").toLowerCase();
       try {
         if (m === "wallet_revokepermissions") {
+          /**
+           * LibertySwap (and other wagmi-based dApps) fire `wallet_revokePermissions` in
+           * a tight loop during disconnect teardown. Without this debounce each call
+           * broadcasts + emits, wagmi reacts to each emit by calling revoke again, and
+           * the page freezes. The first call still runs the full disconnect, so the
+           * UI updates immediately — subsequent spam within 1.5s is a true no-op.
+           */
           var revokeNow = Date.now();
-          if (sessionIsDisconnected() && revokeNow - lastRevokeAtMs < 1500) {
+          var alreadyDisconnected =
+            !sessionAuthorized &&
+            (!currentAccounts || currentAccounts.length === 0) &&
+            disconnectGateActive();
+          if (alreadyDisconnected && revokeNow - lastRevokeAtMs < 1500) {
             return null;
           }
           lastRevokeAtMs = revokeNow;
@@ -538,11 +684,16 @@
           return null;
         }
 
-        // Legacy name used by some tooling; treat like revoke.
         if (m === "metamask_disconnect") {
-          if (sessionIsDisconnected()) {
+          var dcNow = Date.now();
+          var dcAlready =
+            !sessionAuthorized &&
+            (!currentAccounts || currentAccounts.length === 0) &&
+            disconnectGateActive();
+          if (dcAlready && dcNow - lastRevokeAtMs < 1500) {
             return null;
           }
+          lastRevokeAtMs = dcNow;
           clearDappSession({ code: 4900, message: "Disconnected" });
           return null;
         }
@@ -577,6 +728,9 @@
               "No accounts in wallet. Create or import an account in Vaughan first."
             );
           }
+          /** EIP-2255: explicit permission grant after revoke — allow connect again. */
+          setDisconnectGate(false);
+          broadcastSessionConnect();
           sessionAuthorized = true;
           currentAccounts = accRp;
           emitter.emit("accountsChanged", accRp);
@@ -589,11 +743,18 @@
         }
 
         if (m === "wallet_getpermissions") {
+          if (disconnectGateActive()) return [];
           if (!sessionAuthorized || !currentAccounts.length) return [];
           return [{ parentCapability: "eth_accounts" }];
         }
 
         if (m === "eth_accounts") {
+          if (disconnectGateActive()) {
+            sessionAuthorized = false;
+            currentAccounts = [];
+            syncLegacy();
+            return [];
+          }
           if (!sessionAuthorized) {
             syncLegacy();
             return [];
@@ -648,6 +809,8 @@
               "No accounts in wallet. Create or import an account in Vaughan first."
             );
           }
+          setDisconnectGate(false);
+          broadcastSessionConnect();
           sessionAuthorized = true;
           currentAccounts = accounts;
           emitter.emit("accountsChanged", accounts);
@@ -678,6 +841,9 @@
         }
 
         if (m === "eth_sendtransaction") {
+          if (disconnectGateActive()) {
+            throw makeEthRpcError(4100, "Wallet not connected to this site");
+          }
           if (!sessionAuthorized) {
             throw makeEthRpcError(4100, "Wallet not connected to this site");
           }
@@ -740,6 +906,9 @@
         }
 
         if (m === "personal_sign") {
+          if (disconnectGateActive()) {
+            throw makeEthRpcError(4100, "Wallet not connected to this site");
+          }
           if (!sessionAuthorized) {
             throw makeEthRpcError(4100, "Wallet not connected to this site");
           }
@@ -768,6 +937,9 @@
         }
 
         if (m === "eth_signtypeddata_v4") {
+          if (disconnectGateActive()) {
+            throw makeEthRpcError(4100, "Wallet not connected to this site");
+          }
           if (!sessionAuthorized) {
             throw makeEthRpcError(4100, "Wallet not connected to this site");
           }
@@ -833,9 +1005,54 @@
           return null;
         }
 
+        /** EIP-3085 — many dApps call this before connect; previously we threw "Unsupported method". */
+        if (m === "wallet_addethereumchain") {
+          var addP = params && params[0];
+          if (!addP || addP.chainId == null) {
+            throw makeEthRpcError(-32602, "Missing chain configuration");
+          }
+          var addRaw = addP.chainId;
+          var decAdd;
+          if (typeof addRaw === "string" && addRaw.startsWith("0x")) {
+            decAdd = Number(BigInt(addRaw).toString());
+          } else {
+            decAdd = Number(addRaw);
+          }
+          var netAdd0 = await fetchNetworkInfo();
+          if (Number(netAdd0.chain_id) === decAdd) {
+            currentChainIdHex = toHexChainId(netAdd0.chain_id);
+            emitter.emit("chainChanged", currentChainIdHex);
+            syncLegacy();
+            return null;
+          }
+          var respAdd = await tauriInvoke("ipc_request", {
+            request: {
+              type: "SwitchChain",
+              payload: { chain_id: decAdd },
+            },
+          });
+          if (respAdd && respAdd.type === "Error") {
+            throw mapIpcError(respAdd.payload, 4902, "Chain not available in wallet");
+          }
+          var netAdd1 = await fetchNetworkInfo();
+          currentChainIdHex = toHexChainId(netAdd1.chain_id);
+          emitter.emit("chainChanged", currentChainIdHex);
+          syncLegacy();
+          return null;
+        }
+
         throw makeEthRpcError(4200, "Unsupported method: " + method);
       } catch (e) {
-        if (e && (e.code === 4100 || e.code === 4900)) {
+        /**
+         * Only flag as disconnect when there's an active session; otherwise repeated
+         * post-disconnect RPC failures (wagmi cleanup) would re-fire events and
+         * recurse through wagmi's disconnect handler — froze LibertySwap.
+         */
+        if (
+          e &&
+          (e.code === 4100 || e.code === 4900) &&
+          (sessionAuthorized || (currentAccounts && currentAccounts.length))
+        ) {
           emitDisconnect(e);
         }
         throw normalizeProviderError(e);
@@ -861,24 +1078,51 @@
   } catch (e) {}
 
   ethereumProvider.disconnect = async function () {
+    /** No-op when nothing to clear — wagmi can call this during its own disconnect handler. */
+    if (
+      !sessionAuthorized &&
+      (!currentAccounts || currentAccounts.length === 0) &&
+      disconnectGateActive()
+    ) {
+      return;
+    }
     clearDappSession({ code: 4900, message: "Disconnected from dApp" });
   };
 
-  window.ethereum = ethereumProvider;
+  /** Clears the post-disconnect gate so the next `eth_requestAccounts` can authorize (rarely needed now). */
+  ethereumProvider._vaughanResumeConnect = function () {
+    setDisconnectGate(false);
+    broadcastSessionConnect();
+  };
 
-  // EIP-6963: announce twice — MetaMask tile (wagmi/uniswap) + explicit "Vaughan Wallet".
-  // Same EIP-1193 provider; this WebView has no extension, so no conflict with real MetaMask.
+  /**
+   * Intentionally NOT setting `window.ethereum`. wagmi v2 (PulseX, Uniswap, etc.)
+   * registers a separate connector for `window.ethereum` AND for every EIP-6963
+   * announcement, all backed by the same provider, which made disconnect take 2-3
+   * clicks (one per connector). Modern dApps (Uniswap, PulseX, LibertySwap, 9mm,
+   * Piteas, Curve, Aave, 1inch, etc.) all detect via EIP-6963; without
+   * `window.ethereum` they see only the single MetaMask announcement below.
+   *
+   * The provider object is kept on `window.__vaughanEthereum` (non-enumerable) so
+   * our own code paths (announce, debug) can reach it without being picked up by
+   * `'ethereum' in window` / `window.ethereum` detection in wagmi/ethers.
+   */
+  try {
+    Object.defineProperty(window, "__vaughanEthereum", {
+      value: ethereumProvider,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+  } catch (e) {
+    window.__vaughanEthereum = ethereumProvider;
+  }
+
   var providerInfoMetaMask = Object.freeze({
     uuid: "b90d9d3f-12a2-4c1b-b8f8-9b2e7f5a4c11",
     name: "MetaMask",
     icon: WALLET_ICON,
     rdns: "io.metamask",
-  });
-  var providerInfoVaughan = Object.freeze({
-    uuid: "a7e68d1c-0c8b-4f3e-9d2a-1e2f3a4b5c6d",
-    name: "Vaughan Wallet",
-    icon: WALLET_ICON,
-    rdns: "io.vaughan.wallet",
   });
 
   fetchNetworkInfo()
@@ -892,14 +1136,14 @@
 
   function announceProvider() {
     try {
-      var p = window.ethereum;
-      [providerInfoMetaMask, providerInfoVaughan].forEach(function (info) {
-        window.dispatchEvent(
-          new CustomEvent("eip6963:announceProvider", {
-            detail: Object.freeze({ info: info, provider: p }),
-          })
-        );
-      });
+      window.dispatchEvent(
+        new CustomEvent("eip6963:announceProvider", {
+          detail: Object.freeze({
+            info: providerInfoMetaMask,
+            provider: ethereumProvider,
+          }),
+        })
+      );
     } catch (e) {
       console.error("Failed to announce EIP-6963 provider", e);
     }

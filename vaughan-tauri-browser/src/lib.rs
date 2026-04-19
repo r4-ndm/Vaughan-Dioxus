@@ -1353,7 +1353,9 @@ pub fn run() {
             // Defer `hide()` to the next main-loop turn: calling GTK hide synchronously inside the close
             // handler has caused heap corruption on Linux (glibc "corrupted double-linked list").
             if let tauri::RunEvent::WindowEvent { label, event, .. } = event {
-                const DISCONNECT_ETH: &str = "try{if(window.ethereum&&typeof window.ethereum.disconnect==='function'){var d=window.ethereum.disconnect();if(d&&typeof d.then==='function')d.catch(function(){});}}catch(e){}";
+                // `window.ethereum` is intentionally not exposed (EIP-6963 only) —
+                // use the non-enumerable backreference set by `provider_inject.js`.
+                const DISCONNECT_ETH: &str = "try{var p=window.__vaughanEthereum;if(p&&typeof p.disconnect==='function'){var d=p.disconnect();if(d&&typeof d.then==='function')d.catch(function(){});}}catch(e){}";
 
                 if label == "main" {
                     if !intercept_wallet_close {

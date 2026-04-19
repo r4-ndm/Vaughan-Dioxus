@@ -5,6 +5,7 @@
 pub mod chains;
 pub mod core;
 pub mod error;
+pub mod native_dapps;
 pub mod logging;
 pub mod models;
 pub mod monitoring;
