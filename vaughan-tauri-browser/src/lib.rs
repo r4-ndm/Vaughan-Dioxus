@@ -4,8 +4,6 @@
 //!
 //! **Top-level allowlisted `--url`:** when [`resolve_main_webview_url`] accepts the initial URL (same rules as the wallet's `browser.rs`), the main webview uses [`WebviewUrl::External`] instead of `index.html` plus pending navigation.
 //!
-//! **Spike / probes:** set `VAUGHAN_SPIKE_EXTERNAL=1` to inject the one-shot `spike_ping` script and write `.topnav_spike_*.txt` under this crate — see [`doc/TOPNAV-SPIKE.md`](../doc/TOPNAV-SPIKE.md).
-//!
 //! **External load init order (topnav-4):** `initialization_script_for_all_frames` is kept for all navigations; Tauri may not guarantee it runs before page scripts on remote URLs. On each main-frame `PageLoadEvent::Finished`, a tiny `eval` runs only if `window.__VAUGHAN_ETH_INJECTED__` is still missing, and embeds the same provider source via `eval(JSON.parse(...))`.
 //!
 //! **External navigation chrome (topnav-7):** allowlisted top-level loads have no `index.html` toolbar; on desktop we add a **Navigation** window menu (Back / Forward / Reload) with shortcuts. Shell + iframe mode keeps the HTML address bar only.
@@ -48,33 +46,6 @@ use tauri::WebviewWindow;
 use vaughan_ipc_types::{IpcRequest, IpcResponse};
 use vaughan_trusted_hosts::hostname_is_whitelisted;
 
-// #region agent log
-static PERF_LAST_NAV_AT_MS: AtomicU64 = AtomicU64::new(0);
-static PERF_FIRST_RPC_LOGGED_FOR_NAV_AT_MS: AtomicU64 = AtomicU64::new(0);
-
-#[derive(Debug, Clone, Default)]
-struct NavPerfTrace {
-    nav_at_ms: u64,
-    url: String,
-    reveal: bool,
-    dispatch_ms: Option<u64>,
-    page_start_ms: Option<u64>,
-    page_finish_ms: Option<u64>,
-    first_ipc_ms: Option<u64>,
-    summary_emitted: bool,
-}
-
-static NAV_PERF_TRACE: Mutex<NavPerfTrace> = Mutex::new(NavPerfTrace {
-    nav_at_ms: 0,
-    url: String::new(),
-    reveal: false,
-    dispatch_ms: None,
-    page_start_ms: None,
-    page_finish_ms: None,
-    first_ipc_ms: None,
-    summary_emitted: false,
-});
-
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -92,57 +63,6 @@ fn emit_wallet_event(event: &str, data: serde_json::Value) {
     let _ = writeln!(out, "{payload}");
     let _ = out.flush();
 }
-
-fn emit_nav_perf_summary_if_ready(trigger: &str) {
-    let mut summary = None;
-    if let Ok(mut trace) = NAV_PERF_TRACE.lock() {
-        if trace.nav_at_ms > 0 && !trace.summary_emitted {
-            if trace.first_ipc_ms.is_some() || trace.page_finish_ms.is_some() {
-                trace.summary_emitted = true;
-                summary = Some(serde_json::json!({
-                    "trigger": trigger,
-                    "url": trace.url,
-                    "reveal": trace.reveal,
-                    "dispatch_ms": trace.dispatch_ms,
-                    "page_start_ms": trace.page_start_ms.map(|t| t.saturating_sub(trace.nav_at_ms)),
-                    "page_finish_ms": trace.page_finish_ms.map(|t| t.saturating_sub(trace.nav_at_ms)),
-                    "first_ipc_ms": trace.first_ipc_ms.map(|t| t.saturating_sub(trace.nav_at_ms)),
-                }));
-            }
-        }
-    }
-    if let Some(data) = summary {
-        agent_browser_perf_log("P4", "open_latency_summary", data);
-    }
-}
-
-fn agent_browser_perf_log(hypothesis_id: &str, message: &str, data: serde_json::Value) {
-    let ts = now_ms() as u128;
-    let payload = serde_json::json!({
-        "sessionId": "bf0ab3",
-        "runId": "dapp-open-perf",
-        "hypothesisId": hypothesis_id,
-        "location": "vaughan-tauri-browser/src/lib.rs",
-        "message": message,
-        "data": data,
-        "timestamp": ts,
-    });
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join(".cursor")
-        .join("debug-bf0ab3.log");
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
-        let _ = writeln!(f, "{}", payload);
-    }
-}
-// #endregion
 
 /// Prevents overlapping `navigate_main_trusted_app` calls from nested `on_new_window` bursts.
 static ON_NEWWIN_NAV_BUSY: AtomicBool = AtomicBool::new(false);
@@ -348,27 +268,7 @@ fn navigate_main_trusted_app(
     url: String,
     reveal: bool,
 ) -> Result<(), String> {
-    let started = std::time::Instant::now();
     let u = parse_allowlisted_navigation_url(&url)?;
-    let ts_ms = now_ms();
-    PERF_LAST_NAV_AT_MS.store(ts_ms, Ordering::Relaxed);
-    if let Ok(mut trace) = NAV_PERF_TRACE.lock() {
-        trace.nav_at_ms = ts_ms;
-        trace.url = url.clone();
-        trace.reveal = reveal;
-        trace.dispatch_ms = None;
-        trace.page_start_ms = None;
-        trace.page_finish_ms = None;
-        trace.first_ipc_ms = None;
-        trace.summary_emitted = false;
-    }
-    // #region agent log
-    agent_browser_perf_log(
-        "P3",
-        "navigate_main_start",
-        serde_json::json!({ "url": url, "reveal": reveal }),
-    );
-    // #endregion
     let w = app
         .get_webview_window("main")
         .ok_or_else(|| "main webview not found".to_string())?;
@@ -381,16 +281,6 @@ fn navigate_main_trusted_app(
     if reveal {
         let _ = w.show();
         let _ = w.set_focus();
-    }
-    // #region agent log
-    agent_browser_perf_log(
-        "P3",
-        "navigate_main_dispatched",
-        serde_json::json!({ "elapsed_ms": started.elapsed().as_millis(), "reveal": reveal }),
-    );
-    // #endregion
-    if let Ok(mut trace) = NAV_PERF_TRACE.lock() {
-        trace.dispatch_ms = Some(started.elapsed().as_millis() as u64);
     }
     Ok(())
 }
@@ -479,11 +369,6 @@ fn warm_slot_navigate_hidden(
     {
         m.insert(slot_id, 0);
     }
-    agent_browser_perf_log(
-        "P5",
-        "warm_slot_ping_reset",
-        serde_json::json!({ "slot_id": slot_id, "reason": "navigate_hidden" }),
-    );
     Ok(())
 }
 
@@ -500,12 +385,6 @@ fn warm_slot_show(app: &tauri::AppHandle, slot_id: u8) -> Result<(), String> {
     {
         m.insert(slot_id, 0);
     }
-    agent_browser_perf_log(
-        "P5",
-        "warm_slot_ping_reset",
-        serde_json::json!({ "slot_id": slot_id, "reason": "show" }),
-    );
-    agent_browser_perf_log("P5", "warm_slot_claimed", serde_json::json!({ "slot_id": slot_id }));
     emit_wallet_event("slot_claimed", serde_json::json!({ "slot_id": slot_id }));
     Ok(())
 }
@@ -526,11 +405,6 @@ fn warm_slot_hide(app: &tauri::AppHandle, slot_id: u8) -> Result<(), String> {
             m.insert(slot_id, 0);
         }
     }
-    agent_browser_perf_log(
-        "P5",
-        "warm_slot_ping_reset",
-        serde_json::json!({ "slot_id": slot_id, "reason": if had_window { "hide" } else { "hide_no_window" } }),
-    );
     emit_wallet_event("slot_hidden", serde_json::json!({ "slot_id": slot_id }));
     Ok(())
 }
@@ -546,11 +420,6 @@ fn warm_slot_destroy(app: &tauri::AppHandle, slot_id: u8) -> Result<(), String> 
     {
         m.remove(&slot_id);
     }
-    agent_browser_perf_log(
-        "P5",
-        "warm_slot_ping_clear",
-        serde_json::json!({ "slot_id": slot_id, "reason": "destroy" }),
-    );
     emit_wallet_event("slot_destroyed", serde_json::json!({ "slot_id": slot_id }));
     Ok(())
 }
@@ -562,16 +431,6 @@ fn warm_slot_health_check(app: &tauri::AppHandle) {
         .ok()
         .map(|m| m.keys().copied().collect())
         .unwrap_or_default();
-    // #region agent log
-    agent_browser_perf_log(
-        "H2",
-        "health_check_tracked_slots",
-        serde_json::json!({
-            "tracked_count": tracked_slots.len(),
-            "tracked_slots": tracked_slots,
-        }),
-    );
-    // #endregion
     for slot_id in tracked_slots {
         let Some(label) = warm_slot_label(slot_id) else {
             continue;
@@ -585,18 +444,6 @@ fn warm_slot_health_check(app: &tauri::AppHandle) {
                 was_tracked = m.remove(&slot_id).is_some();
             }
             if was_tracked {
-                // #region agent log
-                agent_browser_perf_log(
-                    "H3",
-                    "health_check_missing_tracked_window",
-                    serde_json::json!({ "slot_id": slot_id }),
-                );
-                // #endregion
-                agent_browser_perf_log(
-                    "P5",
-                    "warm_slot_ping_clear",
-                    serde_json::json!({ "slot_id": slot_id, "reason": "window_missing" }),
-                );
                 emit_wallet_event("slot_crashed", serde_json::json!({ "slot_id": slot_id }));
             }
             continue;
@@ -609,11 +456,6 @@ fn warm_slot_health_check(app: &tauri::AppHandle) {
             {
                 m.insert(slot_id, 0);
             }
-            agent_browser_perf_log(
-                "P5",
-                "warm_slot_ping_reset",
-                serde_json::json!({ "slot_id": slot_id, "reason": "health_ok" }),
-            );
             continue;
         }
         let mut streak_now = 1u8;
@@ -625,11 +467,6 @@ fn warm_slot_health_check(app: &tauri::AppHandle) {
             streak_now = prev.saturating_add(1);
             m.insert(slot_id, streak_now);
         }
-        agent_browser_perf_log(
-            "P5",
-            "warm_slot_ping_fail",
-            serde_json::json!({ "slot_id": slot_id, "streak": streak_now }),
-        );
         if streak_now >= 3 {
             emit_wallet_event("slot_crashed", serde_json::json!({ "slot_id": slot_id }));
             let _ = warm_slot_destroy(app, slot_id);
@@ -645,55 +482,6 @@ struct CliConfig {
 }
 
 static IPC_REQ_ID: AtomicU64 = AtomicU64::new(1);
-
-/// Polls for `invoke` (same resolution as `provider_inject.js`) and calls `spike_ping` once (topnav-1).
-const SPIKE_TOPNAV_SCRIPT: &str = r#"
-(function(){
-  var DONE = '__VAUGHAN_TOPNAV_SPIKE_PING_SENT__';
-  if (window[DONE]) return;
-  function getInvoke() {
-    if (
-      window.__TAURI__ &&
-      window.__TAURI__.core &&
-      typeof window.__TAURI__.core.invoke === 'function'
-    ) {
-      return window.__TAURI__.core.invoke.bind(window.__TAURI__.core);
-    }
-    if (window.__TAURI__ && typeof window.__TAURI__.invoke === 'function') {
-      return window.__TAURI__.invoke.bind(window.__TAURI__);
-    }
-    return null;
-  }
-  function ping() {
-    if (window[DONE]) return;
-    try {
-      var c = getInvoke();
-      if (!c) return;
-      window[DONE] = true;
-      var r = c('spike_ping');
-      if (r && typeof r.then === 'function') {
-        r.catch(function (e) { console.error('TOPNAV_SPIKE spike_ping', e); });
-      }
-    } catch (e) {
-      console.error('TOPNAV_SPIKE', e);
-    }
-  }
-  var n = 0;
-  var iv = setInterval(function () {
-    n++;
-    if (window[DONE]) {
-      clearInterval(iv);
-      return;
-    }
-    if (getInvoke()) {
-      clearInterval(iv);
-      ping();
-    } else if (n > 600) {
-      clearInterval(iv);
-    }
-  }, 100);
-})();
-"#;
 
 fn parse_args() -> Option<CliConfig> {
     let mut ipc = None::<String>;
@@ -776,10 +564,6 @@ pub fn run() {
 
     let (webview_url, external_top_level) = resolve_main_webview_url(navigate_after_load.as_ref());
 
-    let run_topnav_spike = std::env::var("VAUGHAN_SPIKE_EXTERNAL")
-        .map(|v| v == "1")
-        .unwrap_or(false);
-
     let wallet_spawned = std::env::var("VAUGHAN_WALLET_SPAWNED")
         .map(|v| v == "1")
         .unwrap_or(false);
@@ -792,9 +576,11 @@ pub fn run() {
     let warmup_hint_is_rocket = std::env::var("VAUGHAN_WARMUP_HINT_IS_ROCKET")
         .map(|v| v == "1")
         .unwrap_or(false);
-    eprintln!(
-        "Vaughan warmup hint: remaining_secs={:?}, is_rocket={}",
-        warmup_hint_remaining_secs, warmup_hint_is_rocket
+    tracing::info!(
+        target: "vaughan_ipc_browser",
+        remaining_secs = ?warmup_hint_remaining_secs,
+        is_rocket = warmup_hint_is_rocket,
+        "Vaughan warmup hint"
     );
     // Keep the OS process alive across window-close only for the wallet's *warm shell* (the
     // long-lived child that hosts the main webview + hidden warm slots). `_new_window`
@@ -804,24 +590,13 @@ pub fn run() {
     let intercept_wallet_close = wallet_warm_shell;
     let use_trusted_chrome = external_top_level || wallet_spawned;
 
-    eprintln!(
-        "Vaughan dApp browser: starting (top_level_external={external_top_level}, wallet_spawned={wallet_spawned}, warm_shell={wallet_warm_shell})"
+    tracing::info!(
+        target: "vaughan_ipc_browser",
+        external_top_level,
+        wallet_spawned,
+        warm_shell = wallet_warm_shell,
+        "Vaughan dApp browser starting"
     );
-
-    // File-based confirmation for TOPNAV spike (stderr may not flush on SIGTERM from `timeout`).
-    if run_topnav_spike {
-        let _ = std::fs::write(
-            concat!(env!("CARGO_MANIFEST_DIR"), "/.topnav_spike_start.txt"),
-            format!(
-                "external_top_level={external_top_level}\nurl_mode={}\n",
-                if external_top_level {
-                    "WebviewUrl::External"
-                } else {
-                    "WebviewUrl::App(index.html)"
-                }
-            ),
-        );
-    }
 
     // Shell (`index.html`) only: allowlisted `--url` uses `WebviewUrl::External` (no pending, no iframe shell).
     let pending_js = if external_top_level {
@@ -837,11 +612,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .manage(ipc_pool)
-        .invoke_handler(tauri::generate_handler![
-            ipc_request,
-            spike_ping,
-            navigate_trusted_dapp
-        ])
+        .invoke_handler(tauri::generate_handler![ipc_request, navigate_trusted_dapp])
         .setup(move |app| {
             let provider_fallback_eval: Option<Arc<String>> = if use_trusted_chrome {
                 let quoted = serde_json::to_string(PROVIDER_INIT_SCRIPT)
@@ -881,26 +652,6 @@ pub fn run() {
                         if let Some(ref warm_js) = warmup_bar_eval {
                             let _ = window.eval(warm_js.as_str());
                         }
-                        let last = PERF_LAST_NAV_AT_MS.load(Ordering::Relaxed);
-                        let now_ms = now_ms();
-                        if let Ok(mut trace) = NAV_PERF_TRACE.lock() {
-                            if trace.nav_at_ms == last && last > 0 {
-                                trace.page_start_ms = Some(now_ms);
-                            }
-                        }
-                        let since_nav_ms = if last > 0 && now_ms >= last {
-                            Some(now_ms - last)
-                        } else {
-                            None
-                        };
-                        agent_browser_perf_log(
-                            "P4",
-                            "main_page_load_started",
-                            serde_json::json!({
-                                "url": payload.url().to_string(),
-                                "since_nav_ms": since_nav_ms,
-                            }),
-                        );
                         return;
                     }
                     if payload.event() != PageLoadEvent::Finished {
@@ -914,34 +665,7 @@ pub fn run() {
                     if let Some(ref warm_js) = warmup_bar_eval {
                         let _ = window.eval(warm_js.as_str());
                     }
-                    let last = PERF_LAST_NAV_AT_MS.load(Ordering::Relaxed);
-                    let now_ms = now_ms();
-                    if let Ok(mut trace) = NAV_PERF_TRACE.lock() {
-                        if trace.nav_at_ms == last && last > 0 {
-                            trace.page_finish_ms = Some(now_ms);
-                        }
-                    }
-                    let since_nav_ms = if last > 0 && now_ms >= last {
-                        Some(now_ms - last)
-                    } else {
-                        None
-                    };
-                    // #region agent log
-                    agent_browser_perf_log(
-                        "P4",
-                        "main_page_load_finished",
-                        serde_json::json!({
-                            "url": payload.url().to_string(),
-                            "since_nav_ms": since_nav_ms,
-                        }),
-                    );
-                    // #endregion
-                    emit_nav_perf_summary_if_ready("page_finished");
                 });
-            }
-
-            if external_top_level && run_topnav_spike {
-                wv = wv.initialization_script(SPIKE_TOPNAV_SCRIPT);
             }
 
             if let Some(script) = pending_js.as_ref() {
@@ -1072,13 +796,6 @@ pub fn run() {
                 if let Err(e) = std::thread::Builder::new()
                     .name("vaughan-wallet-stdin".into())
                     .spawn(move || {
-                        // #region agent log
-                        agent_browser_perf_log(
-                            "H8",
-                            "stdin_control_thread_started",
-                            serde_json::json!({}),
-                        );
-                        // #endregion
                         use std::io::BufReader;
                         let stdin = std::io::stdin();
                         let mut reader = BufReader::new(stdin.lock());
@@ -1120,17 +837,6 @@ pub fn run() {
                                         continue;
                                     };
                                     if let Some(name) = cmd.cmd.as_deref() {
-                                        // #region agent log
-                                        agent_browser_perf_log(
-                                            "H1",
-                                            "stdin_cmd_received",
-                                            serde_json::json!({
-                                                "cmd": name,
-                                                "slot_id": cmd.id,
-                                                "has_url": cmd.url.as_ref().map(|u| !u.is_empty()).unwrap_or(false),
-                                            }),
-                                        );
-                                        // #endregion
                                         match name {
                                             "create_webview" => {
                                                 let Some(slot_id) = cmd.id else { continue; };
@@ -1303,13 +1009,17 @@ pub fn run() {
             }
 
             if external_top_level {
-                eprintln!(
-                    "Vaughan dApp browser: main document is allowlisted external URL (no index.html shell)."
+                tracing::info!(
+                    target: "vaughan_ipc_browser",
+                    "main document is allowlisted external URL (no index.html shell)"
                 );
             }
 
             if cli.is_none() {
-                eprintln!("IPC config missing. Start with --ipc <endpoint> --token <token>");
+                tracing::warn!(
+                    target: "vaughan_ipc_browser",
+                    "IPC config missing. Start with --ipc <endpoint> --token <token>"
+                );
             }
             emit_wallet_event(
                 "ready",
@@ -1380,13 +1090,6 @@ pub fn run() {
                     .and_then(|s| s.parse::<u8>().ok())
                 {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                        // #region agent log
-                        agent_browser_perf_log(
-                            "H4",
-                            "slot_close_requested",
-                            serde_json::json!({ "slot_id": slot_id, "label": label }),
-                        );
-                        // #endregion
                         api.prevent_close();
                         let handle = app.clone();
                         let slot_label = label.to_string();
@@ -1409,20 +1112,6 @@ fn navigate_trusted_dapp(app: tauri::AppHandle, url: String) -> Result<(), Strin
     navigate_main_trusted_app(&app, url, true)
 }
 
-/// TOPNAV spike: invoked from JS when `VAUGHAN_SPIKE_EXTERNAL=1` and the spike init script is injected.
-#[tauri::command]
-fn spike_ping() {
-    eprintln!("TOPNAV_SPIKE: spike_ping invoked from JS — top-level external invoke path works");
-    let _ = std::fs::write(
-        concat!(env!("CARGO_MANIFEST_DIR"), "/.topnav_spike_invoke.txt"),
-        "spike_ping_ok\n",
-    );
-    tracing::info!(
-        target: "vaughan_ipc_browser",
-        "TOPNAV_SPIKE: spike_ping invoked from JS — top-level external invoke path works"
-    );
-}
-
 /// Forwards to the wallet over a pooled local socket (K persistent connections by default).
 #[tauri::command]
 async fn ipc_request(
@@ -1435,36 +1124,7 @@ async fn ipc_request(
 
     let op_timeout = Duration::from_secs(10);
     let id = IPC_REQ_ID.fetch_add(1, Ordering::Relaxed);
-    let nav_ms = PERF_LAST_NAV_AT_MS.load(Ordering::Relaxed);
-    let first_rpc_for_nav = if nav_ms == 0 {
-        false
-    } else {
-        let logged_for = PERF_FIRST_RPC_LOGGED_FOR_NAV_AT_MS.load(Ordering::Acquire);
-        logged_for != nav_ms
-            && PERF_FIRST_RPC_LOGGED_FOR_NAV_AT_MS
-                .compare_exchange(logged_for, nav_ms, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
-    };
     let env = pool.request(id, request, op_timeout).await?;
-
-    if first_rpc_for_nav {
-        let now_ms = now_ms();
-        if let Ok(mut trace) = NAV_PERF_TRACE.lock() {
-            if trace.nav_at_ms == nav_ms {
-                trace.first_ipc_ms = Some(now_ms);
-            }
-        }
-        agent_browser_perf_log(
-            "P4",
-            "first_ipc_after_nav",
-            serde_json::json!({
-                "request_id": id,
-                "since_nav_ms": if now_ms >= nav_ms { Some(now_ms - nav_ms) } else { None },
-            }),
-        );
-        emit_nav_perf_summary_if_ready("first_ipc");
-    }
-
     Ok(env.body)
 }
 

@@ -382,7 +382,6 @@ pub fn DappsView(on_back: Callback<()>) -> Element {
                                 onclick: {
                                     let mut err_sig = dapp_open_error;
                                     let u = d.url.clone();
-                                    let is_fast = is_fast;
                                     move |_| {
                                         let res = if is_fast {
                                             browser::open_trusted_dapp_url_prefer_warm_window(&u)
@@ -517,7 +516,6 @@ pub fn DappsView(on_back: Callback<()>) -> Element {
                                 onclick: {
                                     let mut err_sig = dapp_open_error;
                                     let u = entry.url.to_string();
-                                    let is_fast = is_fast;
                                     move |_| {
                                         let res = if is_fast {
                                             browser::open_trusted_dapp_url_prefer_warm_window(&u)

@@ -11,11 +11,6 @@
 .env.*
 !.env.example
 
-# TOPNAV spike confirmation artifacts (see vaughan-tauri-browser/doc/TOPNAV-SPIKE.md)
-**/.topnav_spike_*.txt
-**/.spike_*.txt
-spike_confirm_test.txt
-spike_line.txt
 
 # Local scratch / accidental rustc output
 /rust_out

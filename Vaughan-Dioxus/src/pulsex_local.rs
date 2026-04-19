@@ -48,7 +48,7 @@ pub fn start_pulsex_local(binary: &Path, server_bind: &str) -> Result<(), String
 
     stop_pulsex_local();
 
-    let workdir = binary.parent().filter(|p| p.as_os_str().len() > 0);
+    let workdir = binary.parent().filter(|p| !p.as_os_str().is_empty());
 
     let mut cmd = Command::new(binary);
     cmd.arg("-s")

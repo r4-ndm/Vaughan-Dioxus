@@ -10,7 +10,7 @@ alloy = { workspace = true }
 async-trait = "0.1"
 url = "2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-tokio = { version = "1", features = ["sync", "rt", "macros", "time"] }
+tokio = { version = "1", features = ["sync", "rt", "macros", "time", "fs"] }
 moka = { version = "0.12", features = ["future"] }
 
 # Security

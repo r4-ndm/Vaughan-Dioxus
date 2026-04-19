@@ -83,13 +83,13 @@ impl WalletIpcServer {
                     .map_err(|e| e.to_string());
 
                 let Ok(name) = name else {
-                    eprintln!("IPC server name parse failed");
+                    tracing::error!(target: "vaughan_ipc", "IPC server name parse failed");
                     return;
                 };
 
                 let listener = ListenerOptions::new().name(name).create_sync();
                 let Ok(listener) = listener else {
-                    eprintln!("IPC server bind failed: {}", endpoint);
+                    tracing::error!(target: "vaughan_ipc", endpoint = %endpoint, "IPC server bind failed");
                     return;
                 };
 
@@ -107,13 +107,13 @@ impl WalletIpcServer {
                                 .enable_all()
                                 .build()
                             else {
-                                eprintln!("IPC connection runtime init failed");
+                                tracing::error!(target: "vaughan_ipc", "IPC connection runtime init failed");
                                 return;
                             };
                             handle_connection(stream, token.as_str(), &services, &rt);
                         })
                     {
-                        eprintln!("IPC connection thread spawn failed: {e}");
+                        tracing::error!(target: "vaughan_ipc", err = %e, "IPC connection thread spawn failed");
                     }
                 }
             })

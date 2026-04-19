@@ -154,7 +154,6 @@ pub fn WalletApp() -> Element {
     });
 
     use_effect({
-        let phase = phase;
         let mut dapp_prewarm_booted = dapp_prewarm_booted;
         let mut last_prewarm_chain = last_prewarm_chain;
         let mut last_prewarm_signature = last_prewarm_signature;

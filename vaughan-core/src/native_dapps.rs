@@ -208,7 +208,7 @@ fn try_embedded_pulsex_archive(expected_sha256: &str) -> Option<Vec<u8>> {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
         verify_sha256(EMBEDDED_PULSEX_TAR_GZ, expected_sha256).ok()?;
-        return Some(EMBEDDED_PULSEX_TAR_GZ.to_vec());
+        Some(EMBEDDED_PULSEX_TAR_GZ.to_vec())
     }
     #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
     {

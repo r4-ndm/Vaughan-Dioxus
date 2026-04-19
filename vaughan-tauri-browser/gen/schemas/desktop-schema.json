@@ -189,12 +189,6 @@
           "markdownDescription": "Allow invoke('navigate_trusted_dapp') to change the main webview URL only to the same allowlisted domains as --url (Rust re-validates every call)."
         },
         {
-          "description": "TOPNAV spike: allow invoke('spike_ping') from webviews to verify __TAURI__ on external top-level documents.",
-          "type": "string",
-          "const": "allow-spike-ping",
-          "markdownDescription": "TOPNAV spike: allow invoke('spike_ping') from webviews to verify __TAURI__ on external top-level documents."
-        },
-        {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",
           "type": "string",
           "const": "core:default",

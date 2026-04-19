@@ -6,7 +6,6 @@
   "permissions": [
     "core:default",
     "allow-ipc-request",
-    "allow-spike-ping",
     "allow-navigate-trusted-dapp"
   ],
   "remote": {

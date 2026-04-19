@@ -29,7 +29,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -39,38 +39,6 @@ pub use vaughan_trusted_hosts::hostname_is_whitelisted;
 
 use crate::services::{shared_services, AppServices};
 use crate::wallet_ipc::{self, WalletIpcServer};
-
-// #region agent log
-fn agent_perf_log(hypothesis_id: &str, message: &str, data: serde_json::Value) {
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
-    let payload = serde_json::json!({
-        "sessionId": "bf0ab3",
-        "runId": "dapp-open-perf",
-        "hypothesisId": hypothesis_id,
-        "location": "Vaughan-Dioxus/src/browser.rs",
-        "message": message,
-        "data": data,
-        "timestamp": ts,
-    });
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join(".cursor")
-        .join("debug-bf0ab3.log");
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
-        let _ = writeln!(f, "{}", payload);
-    }
-}
-// #endregion
 
 fn warm_dapp_browser_env_enabled() -> bool {
     std::env::var("VAUGHAN_NO_WARM_DAPP_BROWSER")
@@ -92,13 +60,11 @@ static LAST_PREWARM_SLOT_BY_KEY: OnceLock<Mutex<HashMap<String, u8>>> = OnceLock
 static HIDDEN_REWARM_RETRY_RUNNING: AtomicBool = AtomicBool::new(false);
 /// Max simultaneous hidden warm WebViews in the dApp child (matches rocket cap per chain).
 const WARM_SLOT_CAP: usize = 6;
-static WARM_POOL_PARENT_STARTED: OnceLock<Instant> = OnceLock::new();
 
 /// Last `heartbeat` / `ready` from the dApp child stdout (warm pool liveness).
 static DAPP_BROWSER_HEARTBEAT_AT: Mutex<Option<Instant>> = Mutex::new(None);
 /// Debounce stale-heartbeat recovery so we do not destroy slots every monitor tick.
 static STALE_HEARTBEAT_RECOVERY_AT: Mutex<Option<Instant>> = Mutex::new(None);
-static STALE_HEARTBEAT_COUNT: AtomicU64 = AtomicU64::new(0);
 const DAPP_WARMUP_HINT_WINDOW: Duration = Duration::from_secs(150);
 
 fn warmup_hint_remaining_secs() -> u64 {
@@ -180,7 +146,6 @@ fn effective_warm_slot_cap() -> usize {
                     continue;
                 };
                 let kb: u64 = rest
-                    .trim_start()
                     .split_whitespace()
                     .next()
                     .and_then(|n| n.parse().ok())
@@ -234,23 +199,12 @@ fn maybe_recover_stale_dapp_browser_heartbeat(inner: &mut BrowserInner, cap: usi
         if let Ok(mut g) = DAPP_BROWSER_HEARTBEAT_AT.lock() {
             *g = Some(Instant::now());
         }
-        agent_perf_log(
-            "P2",
-            "warm_pool_stale_heartbeat_skip_child_alive",
-            serde_json::json!({ "cap": cap }),
-        );
         return;
     }
-    let n = STALE_HEARTBEAT_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-    agent_perf_log(
-        "P2",
-        "warm_pool_stale_heartbeat_recovery",
-        serde_json::json!({ "count": n, "cap": cap }),
-    );
     for id in 0..cap {
         let _ = inner.try_send_warm_slot_destroy(id as u8);
     }
-    warm_pool_reset_all_empty("stale_heartbeat_recovery");
+    warm_pool_reset_all_empty();
 }
 
 #[derive(Clone, Debug)]
@@ -271,34 +225,7 @@ enum WarmSlotPhase {
     },
 }
 
-fn warm_slot_phase_label(phase: &WarmSlotPhase) -> String {
-    match phase {
-        WarmSlotPhase::Empty => "Empty".to_string(),
-        WarmSlotPhase::Warming { url, .. } => format!("Warming({})", normalize_dapp_usage_key(url)),
-        WarmSlotPhase::Ready { url } => format!("Ready({})", normalize_dapp_usage_key(url)),
-        WarmSlotPhase::Claimed { url } => format!("Claimed({})", normalize_dapp_usage_key(url)),
-        WarmSlotPhase::Refilling { url } => {
-            format!("Refilling({})", normalize_dapp_usage_key(url))
-        }
-    }
-}
-
-fn warm_pool_set_slot(pool: &mut WarmPool, slot_id: usize, next: WarmSlotPhase, reason: &str) {
-    let prev = pool.slots[slot_id].clone();
-    let prev_label = warm_slot_phase_label(&prev);
-    let next_label = warm_slot_phase_label(&next);
-    if prev_label != next_label {
-        agent_perf_log(
-            "P2",
-            "warm_slot_transition",
-            serde_json::json!({
-                "slot_id": slot_id,
-                "from": prev_label,
-                "to": next_label,
-                "reason": reason,
-            }),
-        );
-    }
+fn warm_pool_set_slot(pool: &mut WarmPool, slot_id: usize, next: WarmSlotPhase) {
     pool.slots[slot_id] = next;
 }
 
@@ -352,12 +279,7 @@ fn warm_pool_mutex() -> &'static Mutex<WarmPool> {
     })
 }
 
-fn warm_pool_reset_all_empty(reason: &str) {
-    agent_perf_log(
-        "P2",
-        "warm_pool_clear_all",
-        serde_json::json!({ "reason": reason }),
-    );
+fn warm_pool_reset_all_empty() {
     if let Ok(mut p) = warm_pool_mutex().lock() {
         for s in &mut p.slots {
             *s = WarmSlotPhase::Empty;
@@ -389,32 +311,17 @@ fn warm_pool_apply_child_event(event: &str, data: &serde_json::Value) {
             };
             if success {
                 pool.clear_url_failure(&url);
-                warm_pool_set_slot(&mut pool, slot_id, WarmSlotPhase::Ready { url: url.clone() }, "child_loaded_success");
-                agent_perf_log(
-                    "P2",
-                    "warm_slot_event_loaded",
-                    serde_json::json!({ "slot_id": slot_id, "url": url }),
-                );
+                warm_pool_set_slot(&mut pool, slot_id, WarmSlotPhase::Ready { url: url.clone() });
             } else {
                 pool.record_url_failure(&url);
-                warm_pool_set_slot(&mut pool, slot_id, WarmSlotPhase::Empty, "clear");
-                agent_perf_log(
-                    "P2",
-                    "warm_slot_event_load_failed",
-                    serde_json::json!({ "slot_id": slot_id, "url": url }),
-                );
+                warm_pool_set_slot(&mut pool, slot_id, WarmSlotPhase::Empty);
             }
         }
         // Legacy: child used to emit this immediately after navigate; still accept.
         "slot_ready" => {
             if let Some(url) = data.get("url").and_then(|s| s.as_str()).map(|s| s.to_string()) {
                 pool.clear_url_failure(&url);
-                warm_pool_set_slot(&mut pool, slot_id, WarmSlotPhase::Ready { url: url.clone() }, "child_loaded_success");
-                agent_perf_log(
-                    "P2",
-                    "warm_slot_event_ready",
-                    serde_json::json!({ "slot_id": slot_id, "url": url }),
-                );
+                warm_pool_set_slot(&mut pool, slot_id, WarmSlotPhase::Ready { url: url.clone() });
             }
         }
         "slot_claimed" => {
@@ -422,7 +329,7 @@ fn warm_pool_apply_child_event(event: &str, data: &serde_json::Value) {
                 WarmSlotPhase::Ready { url } | WarmSlotPhase::Claimed { url } => url.clone(),
                 _ => return,
             };
-            warm_pool_set_slot(&mut pool, slot_id, WarmSlotPhase::Claimed { url }, "child_claimed");
+            warm_pool_set_slot(&mut pool, slot_id, WarmSlotPhase::Claimed { url });
         }
         "slot_hidden" => {
             let next = match &pool.slots[slot_id] {
@@ -432,7 +339,7 @@ fn warm_pool_apply_child_event(event: &str, data: &serde_json::Value) {
             pool.slots[slot_id] = next;
         }
         "slot_destroyed" => {
-            warm_pool_set_slot(&mut pool, slot_id, WarmSlotPhase::Empty, "clear");
+            warm_pool_set_slot(&mut pool, slot_id, WarmSlotPhase::Empty);
         }
         "slot_crashed" => {
             let url_for_fail = match &pool.slots[slot_id] {
@@ -445,12 +352,7 @@ fn warm_pool_apply_child_event(event: &str, data: &serde_json::Value) {
             if let Some(u) = url_for_fail {
                 pool.record_url_failure(&u);
             }
-            warm_pool_set_slot(&mut pool, slot_id, WarmSlotPhase::Empty, "clear");
-            agent_perf_log(
-                "P2",
-                "warm_slot_event_crashed",
-                serde_json::json!({ "slot_id": slot_id }),
-            );
+            warm_pool_set_slot(&mut pool, slot_id, WarmSlotPhase::Empty);
         }
         _ => {}
     }
@@ -468,53 +370,6 @@ fn warm_pool_ready_slot_for_url(full_url: &str) -> Option<u8> {
         }
     }
     None
-}
-
-#[allow(dead_code)]
-fn warm_pool_active_slot_for_url(full_url: &str) -> Option<u8> {
-    let key = normalize_dapp_usage_key(full_url);
-    let pool = warm_pool_mutex().lock().ok()?;
-    let cap = effective_warm_slot_cap();
-    for (i, phase) in pool.slots.iter().enumerate().take(cap) {
-        match phase {
-            WarmSlotPhase::Warming { url, .. }
-            | WarmSlotPhase::Ready { url }
-            | WarmSlotPhase::Refilling { url }
-            | WarmSlotPhase::Claimed { url } => {
-                if normalize_dapp_usage_key(url) == key {
-                    return Some(i as u8);
-                }
-            }
-            WarmSlotPhase::Empty => {}
-        }
-    }
-    None
-}
-
-#[allow(dead_code)]
-fn wait_for_ready_slot_for_url(full_url: &str, max_wait: Duration) -> Option<u8> {
-    let started = Instant::now();
-    loop {
-        if let Some(slot_id) = warm_pool_ready_slot_for_url(full_url) {
-            return Some(slot_id);
-        }
-        if started.elapsed() >= max_wait {
-            return None;
-        }
-        std::thread::sleep(Duration::from_millis(75));
-    }
-}
-
-#[allow(dead_code)]
-fn warm_pool_startup_grace_wait() -> Duration {
-    let started = WARM_POOL_PARENT_STARTED.get_or_init(Instant::now);
-    // Keep this short so rocket clicks don't feel slower than non-rocket paths.
-    // We now have an active-slot show fallback, so long blocking waits are unnecessary.
-    if started.elapsed() < Duration::from_secs(150) {
-        Duration::from_millis(900)
-    } else {
-        Duration::from_millis(500)
-    }
 }
 
 fn warm_pool_reconcile_tick(inner: &mut BrowserInner) {
@@ -547,36 +402,10 @@ fn warm_pool_reconcile_tick(inner: &mut BrowserInner) {
                 if let Some(url) = desired {
                     if validate_whitelisted_dapp_url(&url).is_ok()
                         && !pool.url_in_backoff(&url)
-                        && {
-                            let create_ok = inner.try_send_warm_slot_create(id).is_ok();
-                            // #region agent log
-                            agent_perf_log(
-                                "H7",
-                                "reconcile_send_create_result",
-                                serde_json::json!({
-                                    "slot_id": id,
-                                    "url": normalize_dapp_usage_key(&url),
-                                    "ok": create_ok,
-                                }),
-                            );
-                            // #endregion
-                            create_ok
-                        }
-                        && {
-                            let nav_ok = inner.try_send_warm_slot_navigate_hidden(id, &url).is_ok();
-                            // #region agent log
-                            agent_perf_log(
-                                "H7",
-                                "reconcile_send_navigate_result",
-                                serde_json::json!({
-                                    "slot_id": id,
-                                    "url": normalize_dapp_usage_key(&url),
-                                    "ok": nav_ok,
-                                }),
-                            );
-                            // #endregion
-                            nav_ok
-                        }
+                        && inner.try_send_warm_slot_create(id).is_ok()
+                        && inner
+                            .try_send_warm_slot_navigate_hidden(id, &url)
+                            .is_ok()
                     {
                         warm_pool_set_slot(
                             &mut pool,
@@ -585,98 +414,34 @@ fn warm_pool_reconcile_tick(inner: &mut BrowserInner) {
                                 url,
                                 since: Instant::now(),
                             },
-                            "reconcile_schedule_warm",
-                        );
-                        agent_perf_log(
-                            "P2",
-                            "warm_pool_warming",
-                            serde_json::json!({ "slot_id": id }),
                         );
                     }
                 }
             }
             WarmSlotPhase::Warming { ref url, since } => {
                 if since.elapsed() > warm_timeout {
-                    // #region agent log
-                    agent_perf_log(
-                        "H6",
-                        "reconcile_clear_warming_timeout",
-                        serde_json::json!({
-                            "slot_id": id,
-                            "warming": normalize_dapp_usage_key(url),
-                            "desired": desired.as_ref().map(|d| normalize_dapp_usage_key(d)),
-                        }),
-                    );
-                    // #endregion
                     pool.record_url_failure(url);
                     let _ = inner.try_send_warm_slot_destroy(id);
-                    warm_pool_set_slot(&mut pool, slot_id, WarmSlotPhase::Empty, "clear");
-                    agent_perf_log(
-                        "P2",
-                        "warm_pool_warm_timeout",
-                        serde_json::json!({ "slot_id": id }),
-                    );
+                    warm_pool_set_slot(&mut pool, slot_id, WarmSlotPhase::Empty);
                 } else if let Some(ref d) = desired {
                     if normalize_dapp_usage_key(d) != normalize_dapp_usage_key(url) {
-                        // #region agent log
-                        agent_perf_log(
-                            "H6",
-                            "reconcile_clear_warming_mismatch",
-                            serde_json::json!({
-                                "slot_id": id,
-                                "warming": normalize_dapp_usage_key(url),
-                                "desired": normalize_dapp_usage_key(d),
-                            }),
-                        );
-                        // #endregion
                         let _ = inner.try_send_warm_slot_destroy(id);
-                        warm_pool_set_slot(&mut pool, slot_id, WarmSlotPhase::Empty, "clear");
+                        warm_pool_set_slot(&mut pool, slot_id, WarmSlotPhase::Empty);
                     }
                 } else {
-                    // #region agent log
-                    agent_perf_log(
-                        "H6",
-                        "reconcile_clear_warming_no_desired",
-                        serde_json::json!({
-                            "slot_id": id,
-                            "warming": normalize_dapp_usage_key(url),
-                        }),
-                    );
-                    // #endregion
                     let _ = inner.try_send_warm_slot_destroy(id);
-                    warm_pool_set_slot(&mut pool, slot_id, WarmSlotPhase::Empty, "clear");
+                    warm_pool_set_slot(&mut pool, slot_id, WarmSlotPhase::Empty);
                 }
             }
             WarmSlotPhase::Ready { ref url } => {
                 if let Some(ref d) = desired {
                     if normalize_dapp_usage_key(d) != normalize_dapp_usage_key(url) {
-                        // #region agent log
-                        agent_perf_log(
-                            "H6",
-                            "reconcile_clear_ready_mismatch",
-                            serde_json::json!({
-                                "slot_id": id,
-                                "ready": normalize_dapp_usage_key(url),
-                                "desired": normalize_dapp_usage_key(d),
-                            }),
-                        );
-                        // #endregion
                         let _ = inner.try_send_warm_slot_destroy(id);
-                        warm_pool_set_slot(&mut pool, slot_id, WarmSlotPhase::Empty, "clear");
+                        warm_pool_set_slot(&mut pool, slot_id, WarmSlotPhase::Empty);
                     }
                 } else {
-                    // #region agent log
-                    agent_perf_log(
-                        "H6",
-                        "reconcile_clear_ready_no_desired",
-                        serde_json::json!({
-                            "slot_id": id,
-                            "ready": normalize_dapp_usage_key(url),
-                        }),
-                    );
-                    // #endregion
                     let _ = inner.try_send_warm_slot_destroy(id);
-                    warm_pool_set_slot(&mut pool, slot_id, WarmSlotPhase::Empty, "clear");
+                    warm_pool_set_slot(&mut pool, slot_id, WarmSlotPhase::Empty);
                 }
             }
             WarmSlotPhase::Claimed { .. } => {}
@@ -714,18 +479,12 @@ fn warm_pool_reconcile_tick(inner: &mut BrowserInner) {
                                 url: d.clone(),
                                 since: Instant::now(),
                             },
-                            "reconcile_refill",
-                        );
-                        agent_perf_log(
-                            "P2",
-                            "warm_pool_refilling",
-                            serde_json::json!({ "slot_id": id }),
                         );
                     } else {
-                        warm_pool_set_slot(&mut pool, slot_id, WarmSlotPhase::Empty, "clear");
+                        warm_pool_set_slot(&mut pool, slot_id, WarmSlotPhase::Empty);
                     }
                 } else {
-                    warm_pool_set_slot(&mut pool, slot_id, WarmSlotPhase::Empty, "clear");
+                    warm_pool_set_slot(&mut pool, slot_id, WarmSlotPhase::Empty);
                 }
             }
         }
@@ -824,16 +583,6 @@ pub fn preconnect_all_visible_trusted_origins_for_chain(active_chain_id: u64) {
     if let Ok(mut guard) = LAST_BROAD_PRECONNECT.lock() {
         if let Some((prev_chain, at)) = *guard {
             if prev_chain == active_chain_id && at.elapsed() < BROAD_PRECONNECT_THROTTLE {
-                // #region agent log
-                agent_perf_log(
-                    "P1",
-                    "broad_preconnect_skipped_throttle",
-                    serde_json::json!({
-                        "chain_id": active_chain_id,
-                        "age_ms": at.elapsed().as_millis(),
-                    }),
-                );
-                // #endregion
                 return;
             }
         }
@@ -865,36 +614,14 @@ pub fn preconnect_all_visible_trusted_origins_for_chain(active_chain_id: u64) {
     if origins.is_empty() {
         return;
     }
-    // #region agent log
-    agent_perf_log(
-        "P1",
-        "broad_preconnect_started",
-        serde_json::json!({
-            "chain_id": active_chain_id,
-            "count": origins.len(),
-        }),
-    );
-    // #endregion
     thread::spawn(move || {
-        let started = Instant::now();
         let mut handles = Vec::with_capacity(origins.len());
         for url in origins {
             handles.push(thread::spawn(move || preconnect_dapp_origin(&url)));
         }
-        let count = handles.len();
         for h in handles {
             let _ = h.join();
         }
-        // #region agent log
-        agent_perf_log(
-            "P1",
-            "broad_preconnect_done",
-            serde_json::json!({
-                "count": count,
-                "elapsed_ms": started.elapsed().as_millis(),
-            }),
-        );
-        // #endregion
     });
 }
 
@@ -908,16 +635,6 @@ fn prewarm_candidate_urls(candidates: Vec<String>) {
     if candidates.is_empty() {
         return;
     }
-    // #region agent log
-    agent_perf_log(
-        "H5",
-        "prewarm_candidates_updated",
-        serde_json::json!({
-            "count": candidates.len(),
-            "keys": candidates.iter().map(|u| normalize_dapp_usage_key(u)).collect::<Vec<_>>(),
-        }),
-    );
-    // #endregion
     if let Ok(mut last) = LAST_PREWARM_CANDIDATES
         .get_or_init(|| Mutex::new(Vec::new()))
         .lock()
@@ -926,7 +643,8 @@ fn prewarm_candidate_urls(candidates: Vec<String>) {
     }
     thread::spawn(move || {
         let mut join_tcp = Vec::with_capacity(candidates.len());
-        for url in candidates.iter().cloned() {
+        for url in &candidates {
+            let url = url.clone();
             join_tcp.push(thread::spawn(move || preconnect_dapp_origin(&url)));
         }
         for h in join_tcp {
@@ -938,15 +656,7 @@ fn prewarm_candidate_urls(candidates: Vec<String>) {
         if multi_warm_pool_env_enabled() {
             // Fast-start: kick slot create+navigate immediately for current candidates instead of
             // waiting for the next monitor reconcile tick.
-            let kicked = try_kick_multiwarm_candidates_now(&candidates);
-            agent_perf_log(
-                "P2",
-                "prewarm_multiwarm_kick",
-                serde_json::json!({
-                    "candidate_count": candidates.len(),
-                    "kicked": kicked,
-                }),
-            );
+            try_kick_multiwarm_candidates_now(&candidates);
             return;
         }
         let warmed = try_hidden_prewarm_candidates(&candidates);
@@ -1004,61 +714,23 @@ fn try_hidden_prewarm_candidates(candidates: &[String]) -> bool {
 
 fn schedule_hidden_rewarm_retry_worker() {
     if HIDDEN_REWARM_RETRY_RUNNING.swap(true, Ordering::AcqRel) {
-        // #region agent log
-        agent_perf_log(
-            "P2",
-            "hidden_rewarm_retry_already_running",
-            serde_json::json!({}),
-        );
-        // #endregion
         return;
     }
     thread::spawn(|| {
-        // #region agent log
-        agent_perf_log(
-            "P2",
-            "hidden_rewarm_retry_started",
-            serde_json::json!({ "max_attempts": 120, "sleep_secs": 2 }),
-        );
-        // #endregion
-        for attempt in 1..=120 {
+        for _ in 0..120 {
             let candidates = LAST_PREWARM_CANDIDATES
                 .get_or_init(|| Mutex::new(Vec::new()))
                 .lock()
                 .map(|c| c.clone())
                 .unwrap_or_default();
             if candidates.is_empty() {
-                // #region agent log
-                agent_perf_log(
-                    "P2",
-                    "hidden_rewarm_retry_stopped_no_candidates",
-                    serde_json::json!({ "attempt": attempt }),
-                );
-                // #endregion
                 break;
             }
-            // #region agent log
-            agent_perf_log(
-                "P2",
-                "hidden_rewarm_retry_tick",
-                serde_json::json!({ "attempt": attempt, "candidate_count": candidates.len() }),
-            );
-            // #endregion
             if try_hidden_prewarm_candidates(&candidates) {
-                // #region agent log
-                agent_perf_log(
-                    "P2",
-                    "hidden_rewarm_retry_success",
-                    serde_json::json!({ "attempt": attempt, "candidate_count": candidates.len() }),
-                );
-                // #endregion
                 break;
             }
             thread::sleep(Duration::from_secs(2));
         }
-        // #region agent log
-        agent_perf_log("P2", "hidden_rewarm_retry_done", serde_json::json!({}));
-        // #endregion
         HIDDEN_REWARM_RETRY_RUNNING.store(false, Ordering::Release);
     });
 }
@@ -1638,46 +1310,53 @@ impl BrowserProcessGuard {
                 Some(server)
             }
             Err(err) => {
-                eprintln!("Failed to start wallet IPC server: {err}");
+                tracing::error!(
+                    target: "vaughan_browser",
+                    err = %err,
+                    "failed to start wallet IPC server"
+                );
                 None
             }
         };
 
         let browser_bin = resolve_browser_executable();
         if browser_bin.is_none() {
-            eprintln!(
+            tracing::warn!(
+                target: "vaughan_browser",
                 "dApp browser executable not found (expected next to the wallet or under target/debug). \
                  Build it with: cargo build -p vaughan-tauri-browser"
             );
         }
 
-        if ipc_server.is_some() {
-            if warm_dapp_browser_env_enabled() {
-                if let Some(bin) = browser_bin {
-                    if BROWSER_STATE.get().is_none() {
-                        let _ = BROWSER_STATE.set(Arc::new(Mutex::new(BrowserInner {
-                            child: None,
-                            control_stdin: None,
-                            last_url: None,
-                            endpoint: endpoint.clone(),
-                            token: token.clone(),
-                            bin: bin.clone(),
-                        })));
-                    }
-                    if let Some(state) = BROWSER_STATE.get() {
-                        if let Ok(mut inner) = state.lock() {
-                            inner.bin = bin;
-                            if inner.child.is_none() {
-                                match inner.spawn(None) {
-                                    Ok(()) => {
-                                        tracing::info!(
-                                            target: "vaughan_browser",
-                                            "dApp browser warm process started (hidden until first trusted dApp)"
-                                        );
-                                    }
-                                    Err(e) => {
-                                        eprintln!("dApp browser warm spawn failed: {e}");
-                                    }
+        if ipc_server.is_some() && warm_dapp_browser_env_enabled() {
+            if let Some(bin) = browser_bin {
+                if BROWSER_STATE.get().is_none() {
+                    let _ = BROWSER_STATE.set(Arc::new(Mutex::new(BrowserInner {
+                        child: None,
+                        control_stdin: None,
+                        last_url: None,
+                        endpoint: endpoint.clone(),
+                        token: token.clone(),
+                        bin: bin.clone(),
+                    })));
+                }
+                if let Some(state) = BROWSER_STATE.get() {
+                    if let Ok(mut inner) = state.lock() {
+                        inner.bin = bin;
+                        if inner.child.is_none() {
+                            match inner.spawn(None) {
+                                Ok(()) => {
+                                    tracing::info!(
+                                        target: "vaughan_browser",
+                                        "dApp browser warm process started (hidden until first trusted dApp)"
+                                    );
+                                }
+                                Err(e) => {
+                                    tracing::error!(
+                                        target: "vaughan_browser",
+                                        err = %e,
+                                        "dApp browser warm spawn failed"
+                                    );
                                 }
                             }
                         }
@@ -1710,17 +1389,9 @@ impl BrowserProcessGuard {
                                 if let Ok(mut hb) = DAPP_BROWSER_HEARTBEAT_AT.lock() {
                                     *hb = None;
                                 }
-                                agent_perf_log(
-                                    "P2",
-                                    "warm_child_exit_observed",
-                                    serde_json::json!({
-                                        "success": status.success(),
-                                        "code": status.code(),
-                                    }),
-                                );
                                 if status.success() {
                                     inner.last_url = None;
-                                    warm_pool_reset_all_empty("child_exit_success");
+                                    warm_pool_reset_all_empty();
                                     if warm_dapp_browser_env_enabled() && inner.bin.exists() {
                                         let _ = inner.spawn(None);
                                     }
