@@ -760,6 +760,23 @@ html, body {
   text-align: right;
 }
 
+/* Square icon actions in the dApp card footer (rocket, PulseX play/stop, etc.) */
+.dapp-card .dapp-card-icon-btn {
+  min-width: 36px;
+  min-height: 36px;
+  padding: 0;
+  flex-shrink: 0;
+  box-sizing: border-box;
+}
+.dapp-card .dapp-card-icon-btn.dapp-card-icon-btn--rocket-on {
+  opacity: 1;
+  filter: grayscale(0) saturate(1.25);
+}
+.dapp-card .dapp-card-icon-btn.dapp-card-icon-btn--rocket-off {
+  opacity: 0.35;
+  filter: grayscale(1) saturate(0.2);
+}
+
 .dapp-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

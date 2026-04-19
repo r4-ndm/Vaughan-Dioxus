@@ -170,7 +170,7 @@ fn install_extract_sync(dest_dir: &Path, archive_bytes: &[u8]) -> Result<(), Wal
     }
     if !found {
         return Err(WalletError::Other(
-            "Archive did not contain pulsex-server".into(),
+            "Archive did not contain the expected PulseX executable.".into(),
         ));
     }
     Ok(())

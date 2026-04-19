@@ -74,15 +74,13 @@ fn warmup_hint_remaining_secs() -> u64 {
         .as_secs()
 }
 
-/// Best-effort per-dApp warm status label for UI diagnostics.
-/// Intended for test visibility on the dApp cards.
+/// Per-dApp warm status: drives the "🚀 Loading" / "🚀 Ready" pill on the
+/// dApp card. Single-warm-pool mode (no per-URL slots) only ever returns
+/// `"Warming"` — claiming `"Ready"` there is dishonest because nothing was
+/// actually pre-loaded for that specific URL.
 pub fn dapp_warm_hint_for_url(url: &str) -> &'static str {
     if !multi_warm_pool_env_enabled() {
-        return if warmup_hint_remaining_secs() > 0 {
-            "Warming"
-        } else {
-            "Ready"
-        };
+        return "Warming";
     }
 
     let key = normalize_dapp_usage_key(url);
@@ -130,10 +128,12 @@ fn is_fast_dapp_selected(url: &str) -> bool {
         .any(|list| list.iter().any(|k| normalize_dapp_usage_key(k) == key))
 }
 
+/// Per-URL warm pool of hidden WebKit windows for starred dApps. Default ON;
+/// set `VAUGHAN_MULTI_WARM_POOL=0` to fall back to a single shared warm shell.
 fn multi_warm_pool_env_enabled() -> bool {
     std::env::var("VAUGHAN_MULTI_WARM_POOL")
-        .map(|v| v == "1")
-        .unwrap_or(false)
+        .map(|v| v != "0")
+        .unwrap_or(true)
 }
 
 /// Soft cap on warm slots from available RAM (Linux `MemAvailable`); other OS → full cap.
@@ -834,7 +834,7 @@ pub const TRUSTED_DAPP_ENTRIES: &[TrustedDapp] = &[
     trusted_dapp!(
         "PulseX (Local)",
         "http://127.0.0.1:3691",
-        "Local PulseX instance — start the server first, then open here.",
+        "PulseX on loopback. Use the footer icons to install or start when needed.",
         "DEX",
         [369, 943]
     ),

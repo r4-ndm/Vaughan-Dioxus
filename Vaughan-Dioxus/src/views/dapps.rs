@@ -91,19 +91,18 @@ fn apply_fast_toggle(
     });
 }
 
-/// Kicks off the PulseX install/update flow on a background task. `success_msg`
-/// is shown when the download + extract + checksum verify succeeds.
+/// Kicks off the PulseX install/update on a background task. Failures surface
+/// via `dapp_open_error` under the grid; success is silent (no layout shift).
 fn run_pulsex_install(
     services: AppServices,
     mut pulsex_busy: Signal<bool>,
-    mut pulsex_toast: Signal<Option<String>>,
-    success_msg: &'static str,
+    mut dapp_open_error: Signal<Option<String>>,
 ) {
     if *pulsex_busy.read() {
         return;
     }
     pulsex_busy.set(true);
-    pulsex_toast.set(None);
+    dapp_open_error.set(None);
     spawn(async move {
         let res = async {
             let m = native_dapps::load_pulsex_manifest(true).await?;
@@ -117,130 +116,118 @@ fn run_pulsex_install(
         .await;
         pulsex_busy.set(false);
         match res {
-            Ok(()) => pulsex_toast.set(Some(success_msg.into())),
-            Err(err) => pulsex_toast.set(Some(err.to_string())),
+            Ok(()) => dapp_open_error.set(None),
+            Err(err) => dapp_open_error.set(Some(err.to_string())),
         }
     });
 }
 
-/// PulseX-local install / update / start / stop controls; rendered inside the
-/// PulseX card via `DappCard`'s `children` slot.
+/// Icon-only PulseX controls in the same footer row as the rocket button.
 #[component]
-fn PulsexLocalControls(
+fn PulsexFooterTrailing(
     pulsex_installed_ver: Signal<Option<String>>,
     pulsex_running: Signal<bool>,
     pulsex_update_available: Signal<bool>,
     pulsex_busy: Signal<bool>,
-    pulsex_toast: Signal<Option<String>>,
+    dapp_open_error: Signal<Option<String>>,
 ) -> Element {
+    if !pulsex_install_supported() {
+        return rsx! {};
+    }
     let services: AppServices = use_context();
     rsx! {
-        div { style: "margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 6px;",
-            p { class: "muted", style: "margin: 0; font-size: 10px; line-height: 1.35;",
-                if pulsex_install_supported() {
-                    "Option B: public `pulsex-manifest.json` + SHA-256; binary lives under your app data directory."
-                } else {
-                    "Automated download targets Linux x86-64. On other systems, run `pulsex-server` yourself."
-                }
-            }
-            if pulsex_install_supported() {
-                div { style: "display: flex; flex-wrap: wrap; gap: 6px; align-items: center;",
-                    if pulsex_installed_ver.read().is_none() {
-                        button {
-                            class: "btn",
-                            disabled: *pulsex_busy.read(),
-                            onclick: {
-                                let services = services.clone();
-                                move |e| {
-                                    e.stop_propagation();
-                                    run_pulsex_install(
-                                        services.clone(),
-                                        pulsex_busy,
-                                        pulsex_toast,
-                                        "Installed and verified.",
-                                    );
-                                }
-                            },
-                            "Install"
-                        }
-                    } else if *pulsex_update_available.read() {
-                        button {
-                            class: "btn",
-                            disabled: *pulsex_busy.read(),
-                            onclick: {
-                                let services = services.clone();
-                                move |e| {
-                                    e.stop_propagation();
-                                    run_pulsex_install(
-                                        services.clone(),
-                                        pulsex_busy,
-                                        pulsex_toast,
-                                        "Updated.",
-                                    );
-                                }
-                            },
-                            "Update"
-                        }
-                    }
-                    if pulsex_installed_ver.read().is_some() {
-                        if *pulsex_running.read() {
-                            button {
-                                class: "btn",
-                                disabled: *pulsex_busy.read(),
-                                onclick: {
-                                    let mut pulsex_busy = pulsex_busy;
-                                    let mut pulsex_toast = pulsex_toast;
-                                    move |e| {
-                                        e.stop_propagation();
-                                        if *pulsex_busy.read() { return; }
-                                        pulsex_busy.set(true);
-                                        pulsex_local::stop_pulsex_local();
-                                        pulsex_busy.set(false);
-                                        pulsex_toast.set(Some("Server stopped.".into()));
-                                    }
-                                },
-                                "Stop server"
+        if pulsex_installed_ver.read().is_some() {
+            if *pulsex_running.read() {
+                button {
+                    class: "btn dapp-card-icon-btn",
+                    title: "Stop local PulseX",
+                    disabled: *pulsex_busy.read(),
+                    onclick: {
+                        let mut pulsex_busy = pulsex_busy;
+                        let mut dapp_open_error = dapp_open_error;
+                        move |e| {
+                            e.stop_propagation();
+                            if *pulsex_busy.read() {
+                                return;
                             }
-                        } else {
-                            button {
-                                class: "btn",
-                                disabled: *pulsex_busy.read(),
-                                onclick: {
-                                    let services = services.clone();
-                                    let mut pulsex_busy = pulsex_busy;
-                                    let mut pulsex_toast = pulsex_toast;
-                                    move |e| {
-                                        e.stop_propagation();
-                                        if *pulsex_busy.read() { return; }
-                                        let Some(rec) = native_dapps::pulsex_record(&services.persistence) else {
-                                            pulsex_toast.set(Some("Install the local server first.".into()));
-                                            return;
-                                        };
-                                        pulsex_busy.set(true);
-                                        pulsex_toast.set(None);
-                                        // Synchronous on the click path: `spawn` without await was unreliable
-                                        // here and could leave `pulsex_busy` stuck.
-                                        let r = pulsex_local::start_pulsex_local(
-                                            &rec.binary_path,
-                                            PULSEX_SERVER_BIND,
-                                        );
-                                        pulsex_busy.set(false);
-                                        match r {
-                                            Ok(()) => pulsex_toast.set(Some("Server started.".into())),
-                                            Err(msg) => pulsex_toast.set(Some(msg)),
-                                        }
-                                    }
-                                },
-                                "Start server"
+                            pulsex_busy.set(true);
+                            pulsex_local::stop_pulsex_local();
+                            pulsex_busy.set(false);
+                            dapp_open_error.set(None);
+                        }
+                    },
+                    "■"
+                }
+            } else {
+                button {
+                    class: "btn dapp-card-icon-btn",
+                    title: "Start local PulseX",
+                    disabled: *pulsex_busy.read(),
+                    onclick: {
+                        let services = services.clone();
+                        let mut pulsex_busy = pulsex_busy;
+                        let mut dapp_open_error = dapp_open_error;
+                        move |e| {
+                            e.stop_propagation();
+                            if *pulsex_busy.read() {
+                                return;
+                            }
+                            let Some(rec) = native_dapps::pulsex_record(&services.persistence) else {
+                                dapp_open_error.set(Some("Install first (⬇).".into()));
+                                return;
+                            };
+                            pulsex_busy.set(true);
+                            dapp_open_error.set(None);
+                            let r = pulsex_local::start_pulsex_local(
+                                &rec.binary_path,
+                                PULSEX_SERVER_BIND,
+                            );
+                            pulsex_busy.set(false);
+                            match r {
+                                Ok(()) => dapp_open_error.set(None),
+                                Err(msg) => dapp_open_error.set(Some(msg)),
                             }
                         }
-                    }
+                    },
+                    "▶"
                 }
             }
-            if let Some(note) = pulsex_toast.read().as_ref() {
-                p { style: "margin: 0; font-size: 10px; color: var(--muted-foreground);",
-                    "{note}"
+            if *pulsex_update_available.read() {
+                button {
+                    class: "btn dapp-card-icon-btn",
+                    title: "Update local PulseX",
+                    disabled: *pulsex_busy.read(),
+                    onclick: {
+                        let services = services.clone();
+                        move |e| {
+                            e.stop_propagation();
+                            run_pulsex_install(
+                                services.clone(),
+                                pulsex_busy,
+                                dapp_open_error,
+                            );
+                        }
+                    },
+                    "⟳"
                 }
+            }
+        } else {
+            button {
+                class: "btn dapp-card-icon-btn",
+                title: "Install local PulseX",
+                disabled: *pulsex_busy.read(),
+                onclick: {
+                    let services = services.clone();
+                    move |e| {
+                        e.stop_propagation();
+                        run_pulsex_install(
+                            services.clone(),
+                            pulsex_busy,
+                            dapp_open_error,
+                        );
+                    }
+                },
+                "⬇"
             }
         }
     }
@@ -261,14 +248,15 @@ fn DappCard(
     on_open: Callback<()>,
     on_remove: Callback<()>,
     on_toggle_fast: Callback<()>,
+    footer_trailing: Element,
     children: Element,
 ) -> Element {
     let fav = google_favicon_url_for_dapp(&url).unwrap_or_default();
     let host = host_label(&url);
-    let rocket_style = if is_fast {
-        "min-width: 36px; opacity: 1; filter: grayscale(0) saturate(1.25);"
+    let rocket_class = if is_fast {
+        "btn dapp-card-icon-btn dapp-card-icon-btn--rocket-on"
     } else {
-        "min-width: 36px; opacity: 0.35; filter: grayscale(1) saturate(0.2);"
+        "btn dapp-card-icon-btn dapp-card-icon-btn--rocket-off"
     };
     rsx! {
         div {
@@ -299,17 +287,21 @@ fn DappCard(
                     }
                 }
                 div { style: "margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; gap: 8px;",
-                    span { class: "dapp-card-cat", "{category}" }
-                    span { class: "dapp-card-host", "{host}" }
-                    button {
-                        class: "btn",
-                        title: "Prioritize this dApp for fast prewarm",
-                        style: "{rocket_style}",
-                        onclick: move |e| {
-                            e.stop_propagation();
-                            on_toggle_fast.call(());
-                        },
-                        "🚀"
+                    div { style: "display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1;",
+                        span { class: "dapp-card-cat", "{category}" }
+                        span { class: "dapp-card-host", "{host}" }
+                    }
+                    div { style: "display: flex; align-items: center; gap: 6px; flex-shrink: 0;",
+                        button {
+                            class: "{rocket_class}",
+                            title: "Prioritize this dApp for fast prewarm",
+                            onclick: move |e| {
+                                e.stop_propagation();
+                                on_toggle_fast.call(());
+                            },
+                            "🚀"
+                        }
+                        {footer_trailing}
                     }
                 }
                 if is_fast {
@@ -320,7 +312,7 @@ fn DappCard(
                             } else {
                                 "font-size: 10px; font-weight: 700; color: #ffd58a;"
                             },
-                            if fully_warmed { "🚀 Fully Warmed" } else { "🚀 Not Warmed Yet" }
+                            if fully_warmed { "Ready" } else { "Loading" }
                         }
                         div { style: "height: 6px; flex: 1; border-radius: 999px; background: rgba(255,255,255,0.14); overflow: hidden;",
                             div {
@@ -370,7 +362,6 @@ pub fn DappsView(on_back: Callback<()>) -> Element {
     let pulsex_running = use_signal(|| false);
     let pulsex_update_available = use_signal(|| false);
     let pulsex_busy = use_signal(|| false);
-    let pulsex_toast = use_signal(|| None::<String>);
     let pulsex_poll_booted = use_signal(|| false);
 
     let mut refresh = {
@@ -697,6 +688,8 @@ pub fn DappsView(on_back: Callback<()>) -> Element {
                                         fast_key.clone(),
                                     );
                                 },
+                                footer_trailing: rsx! {},
+                                children: rsx! {},
                             }
                         }
                     }
@@ -712,6 +705,20 @@ pub fn DappsView(on_back: Callback<()>) -> Element {
                                 "Ready" | "Claimed"
                             );
                         let services_for_toggle = services.clone();
+                        let is_pulsex_local = entry.url == PULSEX_LOCAL_URL;
+                        let footer_trailing = if is_pulsex_local {
+                            rsx! {
+                                PulsexFooterTrailing {
+                                    pulsex_installed_ver,
+                                    pulsex_running,
+                                    pulsex_update_available,
+                                    pulsex_busy,
+                                    dapp_open_error,
+                                }
+                            }
+                        } else {
+                            rsx! {}
+                        };
                         rsx! {
                             DappCard {
                                 key: "{entry.url}",
@@ -743,15 +750,8 @@ pub fn DappsView(on_back: Callback<()>) -> Element {
                                         fast_key.clone(),
                                     );
                                 },
-                                if entry.url == PULSEX_LOCAL_URL {
-                                    PulsexLocalControls {
-                                        pulsex_installed_ver,
-                                        pulsex_running,
-                                        pulsex_update_available,
-                                        pulsex_busy,
-                                        pulsex_toast,
-                                    }
-                                }
+                                footer_trailing,
+                                children: rsx! {},
                             }
                         }
                     }

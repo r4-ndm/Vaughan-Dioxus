@@ -1,7 +1,8 @@
 // Injected into every frame (shell, allowlisted external top-level, cross-origin iframes)
-// via Tauri `initialization_script_for_all_frames`. Discoverable via EIP-6963 only —
-// `window.ethereum` is intentionally not set so wagmi/ethers register exactly one
-// connector (see the long comment near the EIP-6963 announcement for rationale).
+// via Tauri `initialization_script_for_all_frames`. Sets `window.ethereum` AND
+// announces one EIP-6963 provider so both legacy `window.ethereum`-only dApps and
+// modern multi-injection dApps can discover the wallet (see the long comment near
+// the EIP-6963 announcement for the disconnect-click trade-off this implies).
 //
 // Bridge selection (topnav-3):
 // - Use direct `__TAURI__.core.invoke` / `invoke` in this frame when available (shell or WebviewUrl::External top).
@@ -1096,17 +1097,17 @@
   };
 
   /**
-   * Intentionally NOT setting `window.ethereum`. wagmi v2 (PulseX, Uniswap, etc.)
-   * registers a separate connector for `window.ethereum` AND for every EIP-6963
-   * announcement, all backed by the same provider, which made disconnect take 2-3
-   * clicks (one per connector). Modern dApps (Uniswap, PulseX, LibertySwap, 9mm,
-   * Piteas, Curve, Aave, 1inch, etc.) all detect via EIP-6963; without
-   * `window.ethereum` they see only the single MetaMask announcement below.
+   * Expose `window.ethereum` AND announce one EIP-6963 provider. Older dApps
+   * (and some forks of Uniswap-style UIs) only check `window.ethereum`, so
+   * dropping it broke connect on those — we accept the trade-off that
+   * wagmi-v2 dApps (PulseX local) see two connectors and need a second
+   * disconnect click to clear both.
    *
-   * The provider object is kept on `window.__vaughanEthereum` (non-enumerable) so
-   * our own code paths (announce, debug) can reach it without being picked up by
-   * `'ethereum' in window` / `window.ethereum` detection in wagmi/ethers.
+   * Backref `window.__vaughanEthereum` is kept so internal code (e.g. the
+   * window-close cleanup in `vaughan-tauri-browser/src/lib.rs`) can locate
+   * the provider even if a future dApp script overwrites `window.ethereum`.
    */
+  window.ethereum = ethereumProvider;
   try {
     Object.defineProperty(window, "__vaughanEthereum", {
       value: ethereumProvider,

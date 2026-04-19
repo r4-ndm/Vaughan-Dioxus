@@ -41,7 +41,7 @@ pub fn stop_pulsex_local() {
 pub fn start_pulsex_local(binary: &Path, server_bind: &str) -> Result<(), String> {
     if !binary.as_os_str().is_empty() && !binary.exists() {
         return Err(format!(
-            "pulsex-server binary not found at {}. Re-run Install.",
+            "Local PulseX executable not found at {}. Tap Install (⬇) first.",
             binary.display()
         ));
     }
@@ -62,20 +62,20 @@ pub fn start_pulsex_local(binary: &Path, server_bind: &str) -> Result<(), String
 
     let mut child = cmd
         .spawn()
-        .map_err(|e| format!("Could not start pulsex-server: {}", e))?;
+        .map_err(|e| format!("Could not start local PulseX: {}", e))?;
 
     // If the binary exits immediately (port taken, bad bind, etc.), don't claim success.
     std::thread::sleep(Duration::from_millis(120));
     match child.try_wait() {
         Ok(Some(status)) => {
             return Err(format!(
-                "pulsex-server exited immediately (status: {status}). \
-                 Often the port is already in use — try Stop server, or run: fuser -k 3691/tcp"
+                "Local PulseX exited immediately (status: {status}). \
+                 The port may be in use — tap Stop (■), or free 3691/tcp and retry."
             ));
         }
         Ok(None) => { /* still running */ }
         Err(e) => {
-            return Err(format!("Could not query pulsex-server status: {}", e));
+            return Err(format!("Could not check local PulseX process: {}", e));
         }
     }
 
