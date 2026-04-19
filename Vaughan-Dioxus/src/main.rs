@@ -50,7 +50,19 @@ fn main() {
     #[cfg(not(feature = "mobile"))]
     {
         tracing::info!(target: "vaughan_app", "launching desktop wallet");
-        let services = services::shared_services();
+        let services = match services::AppServices::try_new() {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!(target: "vaughan_app", err = %e, "AppServices init failed");
+                eprintln!("Vaughan failed to start: {e}");
+                eprintln!();
+                eprintln!("Common causes:");
+                eprintln!("  • OS keychain unavailable (install/start gnome-keyring, KWallet, or equivalent)");
+                eprintln!("  • Wallet state file is unreadable / locked / corrupted");
+                std::process::exit(2);
+            }
+        };
+        services::install_shared_services(services.clone());
         tracing::info!(target: "vaughan_app", "shared services ready");
 
         let _browser_guard = browser::BrowserProcessGuard::launch_if_available(services);
