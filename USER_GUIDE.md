@@ -1,5 +1,7 @@
 # Vaughan User Guide (Desktop Wallet)
 
+> **Prototype status:** Vaughan is currently a prototype under active development. Expect rough edges, incomplete features, and breaking changes between revisions.
+
 ## 1. Installation & Startup
 
 1. **Download / build** the Vaughan desktop wallet (for now: build from source).

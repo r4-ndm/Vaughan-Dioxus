@@ -2,6 +2,8 @@
 
 Desktop wallet (**Dioxus**) and separate **Tauri** dApp browser, sharing **`vaughan-core`** and a local IPC bridge. Keys stay in the wallet process; the browser only forwards provider-style RPC.
 
+> **Prototype status:** Vaughan is currently a prototype under active development. Expect rough edges, incomplete features, and breaking changes between revisions.
+
 ## Quick start
 
 From the **repository root**, build the dApp browser and wallet, then launch the wallet (the browser binary must exist next to the wallet or under `target/debug` for trusted dApps):
