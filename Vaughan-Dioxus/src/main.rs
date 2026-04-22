@@ -36,6 +36,24 @@ fn apply_vaughan_tauri_default_window_bounds(window: &dioxus_desktop::tao::windo
     window.set_outer_position(PhysicalPosition::new(x, y));
 }
 
+#[cfg(not(feature = "mobile"))]
+fn report_startup_failure(err: &vaughan_core::error::WalletError) {
+    tracing::error!(
+        target: "vaughan_app",
+        err = %err,
+        "wallet startup failed"
+    );
+    tracing::error!(
+        target: "vaughan_app",
+        "common causes: keychain unavailable, or wallet state unreadable/locked/corrupted"
+    );
+    eprintln!("Vaughan failed to start: {err}");
+    eprintln!();
+    eprintln!("Common causes:");
+    eprintln!("  - OS keychain unavailable (install/start gnome-keyring, KWallet, or equivalent)");
+    eprintln!("  - Wallet state file is unreadable / locked / corrupted");
+}
+
 fn main() {
     vaughan_core::logging::init_logging();
     tracing::info!(target: "vaughan_app", "logging initialized");
@@ -53,12 +71,7 @@ fn main() {
         let services = match services::AppServices::try_new() {
             Ok(s) => s,
             Err(e) => {
-                tracing::error!(target: "vaughan_app", err = %e, "AppServices init failed");
-                eprintln!("Vaughan failed to start: {e}");
-                eprintln!();
-                eprintln!("Common causes:");
-                eprintln!("  • OS keychain unavailable (install/start gnome-keyring, KWallet, or equivalent)");
-                eprintln!("  • Wallet state file is unreadable / locked / corrupted");
+                report_startup_failure(&e);
                 std::process::exit(2);
             }
         };
