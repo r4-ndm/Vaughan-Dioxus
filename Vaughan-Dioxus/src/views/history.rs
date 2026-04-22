@@ -78,6 +78,64 @@ fn matches_query(tx: &TxRecord, q: &str) -> bool {
             .contains(&q)
 }
 
+fn format_decimal_amount(raw: &str, decimals: Option<u8>) -> String {
+    let Some(decimals) = decimals else {
+        return raw.to_string();
+    };
+    let raw = raw.trim();
+    if raw.is_empty() || !raw.chars().all(|c| c.is_ascii_digit()) {
+        return raw.to_string();
+    }
+
+    let mut digits = raw.trim_start_matches('0').to_string();
+    if digits.is_empty() {
+        digits = "0".to_string();
+    }
+    let decimals = decimals as usize;
+    if decimals == 0 {
+        return digits;
+    }
+
+    let (int_part, frac_part_full) = if digits.len() > decimals {
+        let split_at = digits.len() - decimals;
+        (&digits[..split_at], &digits[split_at..])
+    } else {
+        ("0", "")
+    };
+
+    let frac_owned = if digits.len() > decimals {
+        frac_part_full.to_string()
+    } else {
+        let mut f = String::with_capacity(decimals);
+        f.push_str(&"0".repeat(decimals - digits.len()));
+        f.push_str(&digits);
+        f
+    };
+
+    // Keep display compact in list rows while preserving significance.
+    let frac = frac_owned
+        .chars()
+        .take(6)
+        .collect::<String>()
+        .trim_end_matches('0')
+        .to_string();
+    if frac.is_empty() {
+        int_part.to_string()
+    } else {
+        format!("{int_part}.{frac}")
+    }
+}
+
+fn tx_amount_label(tx: &TxRecord) -> String {
+    if tx.is_token_transfer {
+        let symbol = tx.token_symbol.as_deref().unwrap_or("TOKEN");
+        let amount = format_decimal_amount(&tx.value, tx.token_decimals);
+        format!("{amount} {symbol}")
+    } else {
+        tx.value.clone()
+    }
+}
+
 #[component]
 pub fn HistoryView(cmd_tx: Coroutine<HistoryCmd>, on_back: Callback<()>) -> Element {
     let mut rt: HistoryRuntime = use_context();
@@ -153,11 +211,7 @@ pub fn HistoryView(cmd_tx: Coroutine<HistoryCmd>, on_back: Callback<()>) -> Elem
                                         }
                                         div { style: "margin-top: 8px; display: flex; justify-content: space-between; gap: 8px;",
                                             span { style: "font-size: 14px; font-weight: 600; color: #eab308;",
-                                                if tx.is_token_transfer {
-                                                    "{tx.value} {tx.token_symbol.as_deref().unwrap_or(\"TOKEN\")}"
-                                                } else {
-                                                    "{tx.value}"
-                                                }
+                                                "{tx_amount_label(tx)}"
                                             }
                                             span { class: "muted", style: "font-size: 11px;",
                                                 if tx.is_token_transfer { "ERC-20" } else { "Native" }
@@ -351,4 +405,28 @@ pub fn use_history_coroutine() -> Coroutine<HistoryCmd> {
             }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_decimal_amount;
+
+    #[test]
+    fn formats_with_decimals_and_trims() {
+        assert_eq!(format_decimal_amount("1234500", Some(6)), "1.2345");
+        assert_eq!(format_decimal_amount("1000000", Some(6)), "1");
+    }
+
+    #[test]
+    fn formats_small_values_below_one() {
+        assert_eq!(format_decimal_amount("1", Some(6)), "0.000001");
+        assert_eq!(format_decimal_amount("12", Some(6)), "0.000012");
+    }
+
+    #[test]
+    fn falls_back_when_decimals_missing_or_invalid() {
+        assert_eq!(format_decimal_amount("12345", None), "12345");
+        assert_eq!(format_decimal_amount("  ", Some(18)), "");
+        assert_eq!(format_decimal_amount("abc", Some(18)), "abc");
+    }
 }
