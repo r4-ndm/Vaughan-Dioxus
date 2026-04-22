@@ -1,9 +1,10 @@
 //! Canonical HTTPS host suffix allowlist for trusted dApp navigation (wallet + Tauri browser).
 //!
-//! **JavaScript parity:** [`ALLOWED_HTTPS_HOST_SUFFIXES`] is mirrored in
+//! **Browser parity:** [`ALLOWED_HTTPS_HOST_SUFFIXES`] is mirrored in
 //! `vaughan-tauri-browser/provider_inject.js` (`TRUSTED_HOST_SUFFIXES`) and
-//! `vaughan-tauri-browser/index.html` (`trustedWalletBridgeOrigin`). Unit tests
-//! assert every Rust entry appears in those files.
+//! `vaughan-tauri-browser/index.html` (`trustedWalletBridgeOrigin`). The Tauri
+//! browser capability allowlist in `capabilities/default.json` must also stay in
+//! sync. Unit tests assert every Rust entry appears in all three files.
 
 /// HTTPS host suffixes: exact match or subdomain (`app.uniswap.org` → `uniswap.org`).
 pub const ALLOWED_HTTPS_HOST_SUFFIXES: &[&str] = &[
@@ -54,6 +55,8 @@ mod tests {
 
     const PROVIDER_JS: &str = include_str!("../../vaughan-tauri-browser/provider_inject.js");
     const INDEX_HTML: &str = include_str!("../../vaughan-tauri-browser/index.html");
+    const CAP_DEFAULT_JSON: &str =
+        include_str!("../../vaughan-tauri-browser/capabilities/default.json");
 
     #[test]
     fn rust_allowlist_entries_appear_in_provider_inject_js() {
@@ -73,6 +76,22 @@ mod tests {
             assert!(
                 INDEX_HTML.contains(&needle),
                 "index.html must list {needle:?} (keep in sync with vaughan-trusted-hosts)"
+            );
+        }
+    }
+
+    #[test]
+    fn rust_allowlist_entries_appear_in_capabilities_default_json() {
+        for s in ALLOWED_HTTPS_HOST_SUFFIXES {
+            let exact = format!("\"https://{s}/*\"");
+            let sub = format!("\"https://*.{s}/*\"");
+            assert!(
+                CAP_DEFAULT_JSON.contains(&exact),
+                "capabilities/default.json must list {exact:?} (keep in sync with vaughan-trusted-hosts)"
+            );
+            assert!(
+                CAP_DEFAULT_JSON.contains(&sub),
+                "capabilities/default.json must list {sub:?} (keep in sync with vaughan-trusted-hosts)"
             );
         }
     }
