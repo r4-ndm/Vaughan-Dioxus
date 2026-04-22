@@ -194,6 +194,41 @@ const PROVIDER_INIT_SCRIPT: &str = include_str!("../provider_inject.js");
 static WARM_SLOT_PROVIDER_FALLBACK: OnceLock<Option<Arc<String>>> = OnceLock::new();
 static WARM_SLOT_PING_FAIL_STREAK: OnceLock<Mutex<HashMap<u8, u8>>> = OnceLock::new();
 
+fn warm_slot_ping_streaks() -> &'static Mutex<HashMap<u8, u8>> {
+    WARM_SLOT_PING_FAIL_STREAK.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn warm_slot_reset_ping_streak(slot_id: u8) {
+    if let Ok(mut m) = warm_slot_ping_streaks().lock() {
+        m.insert(slot_id, 0);
+    }
+}
+
+fn warm_slot_remove_ping_streak(slot_id: u8) -> bool {
+    if let Ok(mut m) = warm_slot_ping_streaks().lock() {
+        return m.remove(&slot_id).is_some();
+    }
+    false
+}
+
+fn warm_slot_next_ping_streak(slot_id: u8) -> u8 {
+    if let Ok(mut m) = warm_slot_ping_streaks().lock() {
+        let prev = *m.get(&slot_id).unwrap_or(&0);
+        let next = prev.saturating_add(1);
+        m.insert(slot_id, next);
+        return next;
+    }
+    1
+}
+
+fn warm_slot_tracked_ids() -> Vec<u8> {
+    warm_slot_ping_streaks()
+        .lock()
+        .ok()
+        .map(|m| m.keys().copied().collect())
+        .unwrap_or_default()
+}
+
 fn default_reveal_true() -> bool {
     true
 }
@@ -363,12 +398,7 @@ fn warm_slot_navigate_hidden(
     let w = ensure_warm_slot_window(app, slot_id)?;
     w.navigate(u).map_err(|e| e.to_string())?;
     let _ = w.hide();
-    if let Ok(mut m) = WARM_SLOT_PING_FAIL_STREAK
-        .get_or_init(|| Mutex::new(HashMap::new()))
-        .lock()
-    {
-        m.insert(slot_id, 0);
-    }
+    warm_slot_reset_ping_streak(slot_id);
     Ok(())
 }
 
@@ -379,12 +409,7 @@ fn warm_slot_show(app: &tauri::AppHandle, slot_id: u8) -> Result<(), String> {
         .ok_or_else(|| "warm slot window missing".to_string())?;
     let _ = w.show();
     let _ = w.set_focus();
-    if let Ok(mut m) = WARM_SLOT_PING_FAIL_STREAK
-        .get_or_init(|| Mutex::new(HashMap::new()))
-        .lock()
-    {
-        m.insert(slot_id, 0);
-    }
+    warm_slot_reset_ping_streak(slot_id);
     emit_wallet_event("slot_claimed", serde_json::json!({ "slot_id": slot_id }));
     Ok(())
 }
@@ -398,12 +423,7 @@ fn warm_slot_hide(app: &tauri::AppHandle, slot_id: u8) -> Result<(), String> {
         false
     };
     if had_window {
-        if let Ok(mut m) = WARM_SLOT_PING_FAIL_STREAK
-            .get_or_init(|| Mutex::new(HashMap::new()))
-            .lock()
-        {
-            m.insert(slot_id, 0);
-        }
+        warm_slot_reset_ping_streak(slot_id);
     }
     emit_wallet_event("slot_hidden", serde_json::json!({ "slot_id": slot_id }));
     Ok(())
@@ -414,35 +434,19 @@ fn warm_slot_destroy(app: &tauri::AppHandle, slot_id: u8) -> Result<(), String> 
     if let Some(w) = app.get_webview_window(&label) {
         let _ = w.close();
     }
-    if let Ok(mut m) = WARM_SLOT_PING_FAIL_STREAK
-        .get_or_init(|| Mutex::new(HashMap::new()))
-        .lock()
-    {
-        m.remove(&slot_id);
-    }
+    let _ = warm_slot_remove_ping_streak(slot_id);
     emit_wallet_event("slot_destroyed", serde_json::json!({ "slot_id": slot_id }));
     Ok(())
 }
 
 fn warm_slot_health_check(app: &tauri::AppHandle) {
-    let tracked_slots: Vec<u8> = WARM_SLOT_PING_FAIL_STREAK
-        .get_or_init(|| Mutex::new(HashMap::new()))
-        .lock()
-        .ok()
-        .map(|m| m.keys().copied().collect())
-        .unwrap_or_default();
+    let tracked_slots: Vec<u8> = warm_slot_tracked_ids();
     for slot_id in tracked_slots {
         let Some(label) = warm_slot_label(slot_id) else {
             continue;
         };
         let Some(w) = app.get_webview_window(&label) else {
-            let mut was_tracked = false;
-            if let Ok(mut m) = WARM_SLOT_PING_FAIL_STREAK
-                .get_or_init(|| Mutex::new(HashMap::new()))
-                .lock()
-            {
-                was_tracked = m.remove(&slot_id).is_some();
-            }
+            let was_tracked = warm_slot_remove_ping_streak(slot_id);
             if was_tracked {
                 emit_wallet_event("slot_crashed", serde_json::json!({ "slot_id": slot_id }));
             }
@@ -450,23 +454,10 @@ fn warm_slot_health_check(app: &tauri::AppHandle) {
         };
         let ok = w.eval("1").is_ok();
         if ok {
-            if let Ok(mut m) = WARM_SLOT_PING_FAIL_STREAK
-                .get_or_init(|| Mutex::new(HashMap::new()))
-                .lock()
-            {
-                m.insert(slot_id, 0);
-            }
+            warm_slot_reset_ping_streak(slot_id);
             continue;
         }
-        let mut streak_now = 1u8;
-        if let Ok(mut m) = WARM_SLOT_PING_FAIL_STREAK
-            .get_or_init(|| Mutex::new(HashMap::new()))
-            .lock()
-        {
-            let prev = *m.get(&slot_id).unwrap_or(&0);
-            streak_now = prev.saturating_add(1);
-            m.insert(slot_id, streak_now);
-        }
+        let streak_now = warm_slot_next_ping_streak(slot_id);
         if streak_now >= 3 {
             emit_wallet_event("slot_crashed", serde_json::json!({ "slot_id": slot_id }));
             let _ = warm_slot_destroy(app, slot_id);
