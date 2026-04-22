@@ -136,6 +136,13 @@ fn validation_error_message(e: ValidationError) -> String {
     format!("Invalid request: {e}")
 }
 
+fn ipc_error(code: u32, message: impl Into<String>) -> IpcResponse {
+    IpcResponse::Error {
+        code,
+        message: message.into(),
+    }
+}
+
 /// Addresses exposed to dApps: `AccountManager` (imported / HD) plus `WalletState` (e.g. dashboard demo).
 fn collect_accounts_for_ipc(
     services: &AppServices,
@@ -288,10 +295,7 @@ fn handle_connection(
                         }
                         ApprovalDecision::Reject => {
                             tracing::info!(target: "vaughan_ipc", request_id = req.id, "SignMessage rejected by user");
-                            IpcResponse::Error {
-                                code: 4001,
-                                message: "User rejected SignMessage request".to_string(),
-                            }
+                            ipc_error(4001, "User rejected SignMessage request")
                         }
                     }
                 }
@@ -309,17 +313,11 @@ fn handle_connection(
                         }
                         ApprovalDecision::Reject => {
                             tracing::info!(target: "vaughan_ipc", request_id = req.id, "SignTransaction rejected by user");
-                            IpcResponse::Error {
-                                code: 4001,
-                                message: "User rejected SignTransaction request".to_string(),
-                            }
+                            ipc_error(4001, "User rejected SignTransaction request")
                         }
                     }
                 }
-                IpcRequest::SignTypedData(_) => IpcResponse::Error {
-                    code: 4200,
-                    message: "Method not implemented in wallet yet".to_string(),
-                },
+                IpcRequest::SignTypedData(_) => ipc_error(4200, "Method not implemented in wallet yet"),
                 IpcRequest::SwitchChain(payload) => {
                     let chain_id = payload.chain_id;
                     let networks = runtime.block_on(services.network_service.list_networks());
@@ -327,10 +325,7 @@ fn handle_connection(
                         if let Err(e) =
                             runtime.block_on(services.network_service.set_active_network(&net.id))
                         {
-                            IpcResponse::Error {
-                                code: 4200,
-                                message: e.to_string(),
-                            }
+                            ipc_error(4200, e.to_string())
                         } else {
                             let id = net.id.clone();
                             if let Err(e) = runtime.block_on(services.persistence.update_and_save(
@@ -350,12 +345,12 @@ fn handle_connection(
                             })
                         }
                     } else {
-                        IpcResponse::Error {
-                            code: 4902,
-                            message: format!(
+                        ipc_error(
+                            4902,
+                            format!(
                                 "Chain id {chain_id} is not in Vaughan's network list. Add it in Settings, then retry."
                             ),
-                        }
+                        )
                     }
                 }
             };
@@ -378,19 +373,16 @@ fn sign_message_response(
 ) -> IpcResponse {
     let session_password = runtime.block_on(services.session_password());
     let Some(password) = session_password else {
-        return IpcResponse::Error {
-            code: 4100,
-            message: "Wallet is locked: import/export password required before signing".to_string(),
-        };
+        return ipc_error(
+            4100,
+            "Wallet is locked: import/export password required before signing",
+        );
     };
 
     let signer = match load_signer_for_address(services, runtime, &payload.address, &password) {
         Ok(s) => s,
         Err(msg) => {
-            return IpcResponse::Error {
-                code: 4100,
-                message: msg,
-            };
+            return ipc_error(4100, msg);
         }
     };
 
@@ -398,10 +390,7 @@ fn sign_message_response(
         match hex::decode(payload.message.trim_start_matches("0x")) {
             Ok(bytes) => bytes,
             Err(_) => {
-                return IpcResponse::Error {
-                    code: 4200,
-                    message: "Invalid hex message payload".to_string(),
-                };
+                return ipc_error(4200, "Invalid hex message payload");
             }
         }
     } else {
@@ -410,10 +399,7 @@ fn sign_message_response(
 
     match signer.sign_message_sync(&msg_bytes) {
         Ok(sig) => IpcResponse::SignedMessage(format!("{sig}")),
-        Err(err) => IpcResponse::Error {
-            code: 4200,
-            message: format!("SignMessage failed: {err}"),
-        },
+        Err(err) => ipc_error(4200, format!("SignMessage failed: {err}")),
     }
 }
 
@@ -424,38 +410,29 @@ fn sign_transaction_response(
 ) -> IpcResponse {
     let session_password = runtime.block_on(services.session_password());
     let Some(password) = session_password else {
-        return IpcResponse::Error {
-            code: 4100,
-            message: "Wallet is locked: import/export password required before signing".to_string(),
-        };
+        return ipc_error(
+            4100,
+            "Wallet is locked: import/export password required before signing",
+        );
     };
 
     let signer = match load_signer_for_address(services, runtime, &payload.from, &password) {
         Ok(s) => s,
         Err(msg) => {
-            return IpcResponse::Error {
-                code: 4100,
-                message: msg,
-            };
+            return ipc_error(4100, msg);
         }
     };
 
     let gas_limit = match parse_optional_u64_decimal(payload.gas_limit.as_deref()) {
         Ok(v) => v,
         Err(msg) => {
-            return IpcResponse::Error {
-                code: 4200,
-                message: msg,
-            };
+            return ipc_error(4200, msg);
         }
     };
     let nonce = match parse_optional_u64_decimal(payload.nonce.as_deref()) {
         Ok(v) => v,
         Err(msg) => {
-            return IpcResponse::Error {
-                code: 4200,
-                message: msg,
-            };
+            return ipc_error(4200, msg);
         }
     };
 
@@ -475,10 +452,7 @@ fn sign_transaction_response(
     let tx_service = TransactionService::new();
     match runtime.block_on(tx_service.sign_evm_transaction(&signer, &evm_tx)) {
         Ok(raw) => IpcResponse::SignedTransaction(raw),
-        Err(err) => IpcResponse::Error {
-            code: 4200,
-            message: format!("SignTransaction failed: {err}"),
-        },
+        Err(err) => ipc_error(4200, format!("SignTransaction failed: {err}")),
     }
 }
 
