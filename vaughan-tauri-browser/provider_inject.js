@@ -522,6 +522,34 @@
     clearDappSession(err);
   }
 
+  function isSessionDisconnected() {
+    return (
+      !sessionAuthorized &&
+      (!currentAccounts || currentAccounts.length === 0) &&
+      disconnectGateActive()
+    );
+  }
+
+  /**
+   * Handles spammy disconnect-style methods (`wallet_revokePermissions`,
+   * `metamask_disconnect`) with the same cooldown semantics.
+   */
+  function handleDisconnectRequest(cooldownMs, reason) {
+    var now = Date.now();
+    if (isSessionDisconnected() && now - lastRevokeAtMs < cooldownMs) {
+      return true;
+    }
+    lastRevokeAtMs = now;
+    clearDappSession(reason);
+    return true;
+  }
+
+  function ensureConnected() {
+    if (disconnectGateActive() || !sessionAuthorized) {
+      throw makeEthRpcError(4100, "Wallet not connected to this site");
+    }
+  }
+
   function syncLegacy() {
     try {
       if (!ethereumProvider) return;
@@ -672,30 +700,18 @@
            * the page freezes. The first call still runs the full disconnect, so the
            * UI updates immediately — subsequent spam within 1.5s is a true no-op.
            */
-          var revokeNow = Date.now();
-          var alreadyDisconnected =
-            !sessionAuthorized &&
-            (!currentAccounts || currentAccounts.length === 0) &&
-            disconnectGateActive();
-          if (alreadyDisconnected && revokeNow - lastRevokeAtMs < 1500) {
-            return null;
-          }
-          lastRevokeAtMs = revokeNow;
-          clearDappSession({ code: 4900, message: "Permissions revoked" });
+          handleDisconnectRequest(1500, {
+            code: 4900,
+            message: "Permissions revoked",
+          });
           return null;
         }
 
         if (m === "metamask_disconnect") {
-          var dcNow = Date.now();
-          var dcAlready =
-            !sessionAuthorized &&
-            (!currentAccounts || currentAccounts.length === 0) &&
-            disconnectGateActive();
-          if (dcAlready && dcNow - lastRevokeAtMs < 1500) {
-            return null;
-          }
-          lastRevokeAtMs = dcNow;
-          clearDappSession({ code: 4900, message: "Disconnected" });
+          handleDisconnectRequest(1500, {
+            code: 4900,
+            message: "Disconnected",
+          });
           return null;
         }
 
@@ -842,12 +858,7 @@
         }
 
         if (m === "eth_sendtransaction") {
-          if (disconnectGateActive()) {
-            throw makeEthRpcError(4100, "Wallet not connected to this site");
-          }
-          if (!sessionAuthorized) {
-            throw makeEthRpcError(4100, "Wallet not connected to this site");
-          }
+          ensureConnected();
           var tx = (params && params[0]) || {};
           var value = tx.value != null ? tx.value : "0x0";
           var from = (tx.from != null ? tx.from : currentAccounts[0]) || null;
@@ -907,12 +918,7 @@
         }
 
         if (m === "personal_sign") {
-          if (disconnectGateActive()) {
-            throw makeEthRpcError(4100, "Wallet not connected to this site");
-          }
-          if (!sessionAuthorized) {
-            throw makeEthRpcError(4100, "Wallet not connected to this site");
-          }
+          ensureConnected();
           var message = params && params[0];
           var address = params && params[1];
           if (!address)
@@ -938,12 +944,7 @@
         }
 
         if (m === "eth_signtypeddata_v4") {
-          if (disconnectGateActive()) {
-            throw makeEthRpcError(4100, "Wallet not connected to this site");
-          }
-          if (!sessionAuthorized) {
-            throw makeEthRpcError(4100, "Wallet not connected to this site");
-          }
+          ensureConnected();
           var addrTd = params && params[0];
           var typedData = params && params[1];
           if (!addrTd)
