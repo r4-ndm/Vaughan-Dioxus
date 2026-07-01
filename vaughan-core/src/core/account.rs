@@ -15,6 +15,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::core::persistence::PersistenceHandle;
+use crate::core::smart_account::derive_smart_account_address;
 use crate::error::WalletError;
 use crate::security::{derive_account, mnemonic_to_seed, validate_mnemonic, KeyringService};
 
@@ -36,6 +37,18 @@ pub enum AccountType {
     #[default]
     Hd,
     Imported,
+    #[serde(rename = "smart_account")]
+    SmartAccount,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SmartAccountInfo {
+    pub salt: alloy::primitives::U256,
+    pub owner_address: Address,
+    pub factory: Address,
+    pub init_code_hash: [u8; 32],
+    #[serde(default)]
+    pub deployed: bool,
 }
 
 /// Wallet account (EVM-only for now; multi-chain addresses will be added later).
@@ -47,6 +60,8 @@ pub struct Account {
     pub account_type: AccountType,
     /// Derivation index (for HD accounts)
     pub index: Option<u32>,
+    #[serde(default)]
+    pub smart_account: Option<SmartAccountInfo>,
 }
 
 /// Keyring id for the single BIP-39 master mnemonic (all HD accounts derive from it).
@@ -207,6 +222,7 @@ impl AccountManager {
             address,
             account_type: AccountType::Hd,
             index: Some(index),
+            smart_account: None,
         };
         self.add_account(acct.clone()).await;
         Ok(acct)
@@ -233,6 +249,7 @@ impl AccountManager {
             address,
             account_type: AccountType::Imported,
             index: None,
+            smart_account: None,
         };
         self.add_account(acct.clone()).await;
         Ok(acct)
@@ -297,6 +314,87 @@ impl AccountManager {
             .expect("persist state poisoned")
             .accounts
             .clone()
+    }
+
+    pub fn list_accounts_sync(&self) -> Vec<Account> {
+        self.persistence
+            .state
+            .read()
+            .expect("persist state poisoned")
+            .accounts
+            .clone()
+    }
+
+    /// Create a new smart account derived from an owner EOA.
+    /// The owner EOA must already exist as an Hd or Imported account.
+    pub async fn create_smart_account(
+        &self,
+        owner_address: Address,
+        salt: alloy::primitives::U256,
+        factory: Address,
+        creation_bytecode: &[u8],
+        label: Option<String>,
+    ) -> Result<Account, WalletError> {
+        // Verify owner exists
+        let accounts = self.list_accounts().await;
+        if !accounts.iter().any(|a| {
+            a.address == owner_address
+                && matches!(a.account_type, AccountType::Hd | AccountType::Imported)
+        }) {
+            return Err(WalletError::AccountNotFound(format!(
+                "Owner EOA {} not found in wallet",
+                owner_address
+            )));
+        }
+
+        let (address, init_code_hash) = derive_smart_account_address(
+            factory,
+            owner_address,
+            salt,
+            creation_bytecode,
+        );
+
+        let acct = Account {
+            id: AccountId::new(),
+            name: label.unwrap_or_else(|| format!("Smart {}", &format!("{address:?}")[..8])),
+            address,
+            account_type: AccountType::SmartAccount,
+            index: None,
+            smart_account: Some(SmartAccountInfo {
+                salt,
+                owner_address,
+                factory,
+                init_code_hash,
+                deployed: false,
+            }),
+        };
+
+        if let Err(e) = self
+            .persistence
+            .update_and_save(|st| {
+                st.accounts.push(acct.clone());
+                if st.active_account.is_none() {
+                    st.active_account = Some(acct.id);
+                }
+            })
+            .await
+        {
+            tracing::warn!(target: "vaughan_core", "Failed to persist smart account: {}", e);
+        }
+        Ok(acct)
+    }
+
+    /// Mark a smart account as deployed (after successful deployAndExecute).
+    pub async fn mark_smart_account_deployed(&self, id: AccountId) -> Result<(), WalletError> {
+        self.persistence
+            .update_and_save(|st| {
+                if let Some(acct) = st.accounts.iter_mut().find(|a| a.id == id) {
+                    if let Some(ref mut info) = acct.smart_account {
+                        info.deployed = true;
+                    }
+                }
+            })
+            .await
     }
 
     pub async fn rename_account(&self, id: AccountId, new_name: String) -> Result<(), WalletError> {
@@ -473,6 +571,9 @@ impl AccountManager {
                         }
                         changed = true;
                     }
+                }
+                AccountType::SmartAccount => {
+                    new_accounts.push(account);
                 }
             }
         }

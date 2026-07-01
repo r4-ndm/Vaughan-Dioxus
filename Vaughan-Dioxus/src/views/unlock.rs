@@ -8,6 +8,7 @@ use vaughan_core::error::WalletError;
 
 use crate::services::AppServices;
 use crate::theme::ThemeStyles;
+use crate::utils::password_lockout::lockout_message;
 
 const STARTUP_UNLOCK_KEY: &str = "startup_unlock";
 
@@ -62,13 +63,8 @@ pub fn StartupUnlockView(on_unlocked: Callback<()>) -> Element {
                     .is_locked(STARTUP_UNLOCK_KEY)
                     .await
                 {
-                    let mins = services
-                        .password_attempt_limiter
-                        .lockout_duration()
-                        .as_secs()
-                        / 60;
-                    error_c.set(Some(format!(
-                        "Too many failed attempts. Try again in about {mins} minutes."
+                    error_c.set(Some(lockout_message(
+                        services.password_attempt_limiter.lockout_duration(),
                     )));
                     continue;
                 }
@@ -105,13 +101,8 @@ pub fn StartupUnlockView(on_unlocked: Callback<()>) -> Element {
                             {
                                 Ok(()) => error_c.set(Some(e.user_message())),
                                 Err(_) => {
-                                    let mins = services
-                                        .password_attempt_limiter
-                                        .lockout_duration()
-                                        .as_secs()
-                                        / 60;
-                                    error_c.set(Some(format!(
-                                        "Too many failed attempts. Try again in about {mins} minutes."
+                                    error_c.set(Some(lockout_message(
+                                        services.password_attempt_limiter.lockout_duration(),
                                     )));
                                 }
                             }

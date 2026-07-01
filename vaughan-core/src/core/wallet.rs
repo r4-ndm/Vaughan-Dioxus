@@ -262,6 +262,7 @@ mod tests {
             address: Address::ZERO,
             account_type: AccountType::Hd,
             index: Some(0),
+            smart_account: None,
         }
     }
 

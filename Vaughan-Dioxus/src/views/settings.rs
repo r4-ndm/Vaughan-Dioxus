@@ -363,6 +363,13 @@ pub fn use_settings_coroutine() -> Coroutine<SettingsCmd> {
                                 .await
                                 .map(|n| n.id),
                         );
+                        let sound = services
+                            .persistence
+                            .snapshot()
+                            .preferences
+                            .map(|p| p.sound_enabled)
+                            .unwrap_or(false);
+                        rt2.sound_enabled.set(sound);
 
                         rt2.loading.set(false);
                     }
@@ -454,6 +461,13 @@ pub fn use_settings_coroutine() -> Coroutine<SettingsCmd> {
                     }
                     SettingsCmd::ToggleSound(v) => {
                         rt2.sound_enabled.set(v);
+                        let _ = services
+                            .persistence
+                            .update_and_save(|st| {
+                                let prefs = st.preferences.get_or_insert_with(Default::default);
+                                prefs.sound_enabled = v;
+                            })
+                            .await;
                     }
                 }
             }

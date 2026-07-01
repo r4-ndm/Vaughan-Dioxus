@@ -1,9 +1,11 @@
 use dioxus::prelude::*;
+use vaughan_core::core::AccountType;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AccountOption {
     pub name: String,
     pub address: String,
+    pub account_type: AccountType,
 }
 
 fn short_addr(a: &str) -> String {
@@ -51,7 +53,12 @@ pub fn AccountSelector(
                                     is_open.set(false);
                                 }
                             },
-                            span { "{acc.name}" }
+                            span {
+                                "{acc.name}"
+                                if acc.account_type == AccountType::SmartAccount {
+                                    span { style: "background: #2563eb; color: white; border-radius: 4px; padding: 2px 6px; font-size: 10px; margin-left: 8px; font-weight: bold; font-family: var(--font-sans);", "Smart" }
+                                }
+                            }
                             if active_address.as_deref() == Some(acc.address.as_str()) {
                                 span { style: "color: #22c55e; font-size: 12px;", "●" }
                             } else {

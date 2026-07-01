@@ -28,3 +28,11 @@ rust_out
 
 # Archived / backup copy of the old Tauri tree (not part of this repo)
 Vaughan-Old/
+
+# Solidity / Foundry build artifacts
+/vaughan-contracts/out/
+/vaughan-contracts/cache/
+
+# Tauri v2 generated files
+/vaughan-tauri-browser/gen/
+

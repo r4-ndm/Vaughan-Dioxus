@@ -6,4 +6,7 @@ description = "Canonical trusted dApp HTTPS host suffix list for Vaughan"
 license.workspace = true
 repository.workspace = true
 
+[dependencies]
+url = "2"
+
 [lib]

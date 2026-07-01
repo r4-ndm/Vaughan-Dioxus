@@ -5,11 +5,11 @@ pub mod types;
 
 pub use evm::EvmAdapter;
 pub use types::{
-    Balance, ChainInfo, ChainTransaction, ChainType, EvmTransaction, Fee, Signature, TokenInfo,
-    TxHash, TxRecord, TxStatus,
+    Balance, ChainInfo, ChainTransaction, ChainType, EvmTransaction, Fee, TokenInfo, TxHash,
+    TxRecord, TxStatus,
 };
 
-// ChainAdapter trait and EVM adapter will go here; stub for now.
+// ChainAdapter trait; EVM adapter in `evm/`.
 use crate::error::WalletError;
 use async_trait::async_trait;
 

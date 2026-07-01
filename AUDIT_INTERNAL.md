@@ -107,3 +107,63 @@ The codebase shows **deliberate security choices** (keychain-backed secrets, Arg
 ---
 
 *This document is a living artifact; append dated reruns after major milestones.*
+
+---
+
+## 8. Code audit & phased cleanup (2026-06-05)
+
+**Scope:** Messy code, duplicates, dead code, and bloat across all five workspace crates. **Deletion policy:** conservative — only zero-reference items removed; serde schema fields retained.
+
+### Baseline (pre-cleanup)
+
+| Check | Result |
+|--------|--------|
+| `cargo test --workspace` | **Green** (all crate + integration tests) |
+| `cargo clippy -p vaughan-core -p vaughan-ipc-types -- -D warnings` | **Clean** |
+| `cargo clippy -p vaughan-dioxus` | **~76 warnings** (prior audit) |
+
+### Phase 1 — Dead code removed (safe)
+
+| Item | Action |
+|------|--------|
+| `BalanceDisplay` component | Deleted (`components/balance_display.rs`); never used in views |
+| `models/wallet.rs` (`Account`/`AccountType` duplicate) | Deleted; `core/account.rs` is canonical |
+| `Signature` type (`chains/types.rs`) | Removed; zero references |
+| `TrackedToken` struct (`core/token.rs`) | Removed; `TokenManager` retained |
+| Stale `#[allow(unused_imports)]` in `components/mod.rs` | Removed |
+
+**Intentionally kept:** `DappUsageStats` / `dapp_usage_v1`, `StateManager`, hardware-wallet stubs, `ChainType` non-EVM variants (serde / roadmap).
+
+### Phase 2 — Duplication consolidated
+
+| Area | New shared location |
+|------|---------------------|
+| Signer loading + `parse_optional_u64_decimal` + `address_to_hex` | `vaughan-core/src/core/signing.rs` |
+| Explorer `fetch_txlist` / `fetch_tokentx` | Parameterized `fetch_explorer_account_txs` in `chains/evm/history.rs` |
+| `AdapterNetworkKey` + `current_network_key()` | `Vaughan-Dioxus/src/chain_bootstrap.rs` |
+| Selector polling + set-active-account | `Vaughan-Dioxus/src/wallet_selectors.rs` |
+| dApps URL open (Enter + Go) | `try_open_dapp_from_input` in `views/dapps.rs` |
+| URL allowlist validation | `vaughan-trusted-hosts::validate_navigation_url` / `parse_navigation_url` |
+| Password lockout messages | `utils/password_lockout.rs` |
+
+### Phase 3 — Incomplete features wired
+
+- **`sound_enabled`:** Settings toggle now loads from and persists to `UserPreferences` in `state.json`.
+- **`polling_interval_secs`:** Selector poll loops (dashboard, dApps) now read this preference (min 1s).
+- **Stale comments:** Fixed in `chains/mod.rs`, `vaughan-tauri-browser/src/main.rs`.
+
+### Post-cleanup verification (2026-06-05)
+
+| Check | Result |
+|--------|--------|
+| `cargo test --workspace` | **Green** |
+| `cargo clippy -p vaughan-core -p vaughan-ipc-types -p vaughan-trusted-hosts -- -D warnings` | **Clean** |
+| `cargo clippy -p vaughan-dioxus` | **4 warnings** (down from ~76) |
+
+### Deferred (out of scope for this pass)
+
+- Splitting monolithic files (`browser.rs`, `send.rs`, `theme.rs`)
+- Removing planned feature stubs (hardware wallets, `audio` feature flag)
+- Deleting `dapp_usage_v1` serde field
+- `cargo udeps` / `cargo bloat` / binary size optimization
+- Generic `ApprovalBroker<T>` for `dapp_approval.rs` symmetry

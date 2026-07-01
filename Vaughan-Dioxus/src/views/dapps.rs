@@ -20,9 +20,28 @@ use crate::chain_bootstrap::refresh_evm_adapter_for_active_network;
 use crate::components::{AccountOption, AccountSelector, NetworkOption, NetworkSelector};
 use crate::dapp_approval::{broker, PendingSignMessage, PendingSignTransaction};
 use crate::services::AppServices;
+use crate::wallet_selectors::{set_active_account_and_refresh, spawn_wallet_selector_poll};
 
 /// Curated entry for loopback PulseX (`browser.rs`); controls use the same URL key.
 const PULSEX_LOCAL_URL: &str = "http://127.0.0.1:3691";
+
+enum OpenDappOutcome {
+    Opened,
+    ValidationError(String),
+    BrowserError(String),
+}
+
+/// Open a user-entered dApp URL in a new browser window after validation.
+fn try_open_dapp_from_input(raw: &str) -> OpenDappOutcome {
+    let formatted = format_user_dapp_url(raw);
+    match validate_whitelisted_dapp_url(&formatted) {
+        Err(e) => OpenDappOutcome::ValidationError(e),
+        Ok(normalized) => match browser::open_trusted_dapp_url_new_window(&normalized) {
+            Ok(()) => OpenDappOutcome::Opened,
+            Err(e) => OpenDappOutcome::BrowserError(e),
+        },
+    }
+}
 const PULSEX_SERVER_BIND: &str = "127.0.0.1:3691";
 
 fn pulsex_install_supported() -> bool {
@@ -441,65 +460,20 @@ pub fn DappsView(on_back: Callback<()>) -> Element {
 
     use_effect({
         let services = services.clone();
-        let mut networks = networks;
-        let mut active_network_id = active_network_id;
-        let mut active_chain_id = active_chain_id;
-        let mut accounts = accounts;
-        let mut active_account_address = active_account_address;
         let mut selectors_booted = selectors_booted;
         move || {
             if selectors_booted() {
                 return;
             }
             selectors_booted.set(true);
-            let services = services.clone();
-            spawn(async move {
-                loop {
-                    let nets = services
-                        .network_service
-                        .list_networks()
-                        .await
-                        .into_iter()
-                        .map(|n| NetworkOption {
-                            id: n.id,
-                            name: n.name,
-                            chain_id: n.chain_id,
-                        })
-                        .collect::<Vec<_>>();
-                    let active_net = services
-                        .network_service
-                        .active_network()
-                        .await
-                        .map(|n| n.id);
-                    let chain = services
-                        .network_service
-                        .active_network()
-                        .await
-                        .map(|n| n.chain_id)
-                        .unwrap_or(1);
-                    let accts = services
-                        .account_manager
-                        .list_accounts()
-                        .await
-                        .into_iter()
-                        .map(|a| AccountOption {
-                            name: a.name,
-                            address: format!("{:?}", a.address),
-                        })
-                        .collect::<Vec<_>>();
-                    let active_acct = services
-                        .account_manager
-                        .active_account()
-                        .await
-                        .map(|a| format!("{:?}", a.address));
-                    networks.set(nets);
-                    active_network_id.set(active_net);
-                    active_chain_id.set(chain);
-                    accounts.set(accts);
-                    active_account_address.set(active_acct);
-                    tokio::time::sleep(Duration::from_secs(2)).await;
-                }
-            });
+            spawn_wallet_selector_poll(
+                services.clone(),
+                networks,
+                active_network_id,
+                accounts,
+                active_account_address,
+                Some(active_chain_id),
+            );
         }
     });
 
@@ -567,26 +541,13 @@ pub fn DappsView(on_back: Callback<()>) -> Element {
             let wallet_state = wallet_state.clone();
             let mut runtime = runtime.clone();
             spawn(async move {
-                let acc = services
-                    .account_manager
-                    .list_accounts()
-                    .await
-                    .into_iter()
-                    .find(|a| format!("{:?}", a.address) == address);
-                let Some(acc) = acc else { return };
-                if services.account_manager.set_active(acc.id).await.is_err() {
-                    return;
-                }
-                if wallet_state.set_active_account_by_id(acc.id).await.is_err() {
-                    wallet_state.add_account(acc.clone()).await;
-                    let _ = wallet_state.set_active_account_by_id(acc.id).await;
-                }
-                if let Ok(b) = wallet_state.get_active_balance().await {
-                    runtime.balance.set(Some(b.clone()));
-                    runtime
-                        .balance_events
-                        .with_mut(|v: &mut Vec<BalanceEvent>| v.push(BalanceEvent { balance: b }));
-                }
+                set_active_account_and_refresh(
+                    &services,
+                    wallet_state.as_ref(),
+                    &mut runtime,
+                    &address,
+                )
+                .await;
             });
         }
     };
@@ -811,17 +772,12 @@ pub fn DappsView(on_back: Callback<()>) -> Element {
                     onkeydown: move |e: Event<KeyboardData>| {
                         if e.key() == Key::Enter && !custom_url.read().trim().is_empty() && !*launching_custom.read() {
                             let raw = custom_url.read().clone();
-                            let formatted = format_user_dapp_url(&raw);
                             launching_custom.set(true);
                             url_bar_error.set(None);
-                            match validate_whitelisted_dapp_url(&formatted) {
-                                Ok(normalized) => {
-                                    match browser::open_trusted_dapp_url_new_window(&normalized) {
-                                        Ok(()) => dapp_open_error.set(None),
-                                        Err(err) => dapp_open_error.set(Some(err)),
-                                    }
-                                }
-                                Err(err) => url_bar_error.set(Some(err)),
+                            match try_open_dapp_from_input(&raw) {
+                                OpenDappOutcome::Opened => dapp_open_error.set(None),
+                                OpenDappOutcome::ValidationError(err) => url_bar_error.set(Some(err)),
+                                OpenDappOutcome::BrowserError(err) => dapp_open_error.set(Some(err)),
                             }
                             launching_custom.set(false);
                         }
@@ -836,17 +792,12 @@ pub fn DappsView(on_back: Callback<()>) -> Element {
                         if raw.trim().is_empty() {
                             return;
                         }
-                        let formatted = format_user_dapp_url(&raw);
                         launching_custom.set(true);
                         url_bar_error.set(None);
-                        match validate_whitelisted_dapp_url(&formatted) {
-                            Ok(normalized) => {
-                                match browser::open_trusted_dapp_url_new_window(&normalized) {
-                                    Ok(()) => dapp_open_error.set(None),
-                                    Err(err) => dapp_open_error.set(Some(err)),
-                                }
-                            }
-                            Err(err) => url_bar_error.set(Some(err)),
+                        match try_open_dapp_from_input(&raw) {
+                            OpenDappOutcome::Opened => dapp_open_error.set(None),
+                            OpenDappOutcome::ValidationError(err) => url_bar_error.set(Some(err)),
+                            OpenDappOutcome::BrowserError(err) => dapp_open_error.set(Some(err)),
                         }
                         launching_custom.set(false);
                     },

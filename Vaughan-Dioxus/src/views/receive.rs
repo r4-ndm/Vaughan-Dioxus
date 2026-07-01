@@ -23,13 +23,13 @@ pub fn ReceiveView(on_back: Callback<()>) -> Element {
         let mgr = services.account_manager.clone();
         let mut receive_address = receive_address;
         spawn(async move {
-            let s = match mgr.active_account().await {
-                Some(a) => Some(format!("{:?}", a.address)),
-                None => mgr
-                    .list_accounts()
-                    .await
-                    .first()
-                    .map(|a| format!("{:?}", a.address)),
+            let s = {
+                let hex = crate::chain_bootstrap::primary_wallet_address_hex(mgr.as_ref()).await;
+                if hex.is_empty() {
+                    None
+                } else {
+                    Some(hex)
+                }
             };
             receive_address.set(s);
         });

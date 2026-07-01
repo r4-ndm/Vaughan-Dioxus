@@ -2,20 +2,12 @@
 //!
 //! Tracks user-added tokens per chain (starting with ERC-20 on EVM).
 
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use tokio::sync::RwLock;
 
 use crate::chains::TokenInfo;
 use crate::error::WalletError;
-
-/// A token entry tracked by the user for a specific chain.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TrackedToken {
-    pub chain_id: u64,
-    pub token: TokenInfo,
-}
 
 /// Manages user-tracked tokens (in-memory for now; persistence wired later).
 pub struct TokenManager {

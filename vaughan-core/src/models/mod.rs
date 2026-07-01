@@ -1,7 +1,5 @@
-//! Shared data models (account, balance, transaction, etc.).
+//! Shared data models (ERC-20 ABI, etc.).
 
 pub mod erc20;
-pub mod wallet;
 
 pub use erc20::IERC20;
-pub use wallet::{Account, AccountType};

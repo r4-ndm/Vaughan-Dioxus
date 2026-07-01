@@ -25,6 +25,7 @@ vaughan-ipc-types = { path = "../vaughan-ipc-types" }
 hex = "0.4"
 url = "2"
 tracing = "0.1"
+webbrowser = "1.2.1"
 
 [features]
 default = ["desktop"]

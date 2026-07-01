@@ -3,6 +3,8 @@ use std::time::Duration;
 
 use vaughan_core::monitoring::BalanceEvent;
 
+const VAUGHAN_LOGO: Asset = asset!("/assets/vaughan-logo-513x76-thor.png");
+
 use crate::browser;
 use crate::components::ColoredAddressText;
 use crate::services::shared_services;
@@ -254,15 +256,7 @@ pub fn WalletApp() -> Element {
             let mgr = services.account_manager.clone();
             let mut header_account_addr = header_account_addr;
             spawn(async move {
-                let s = match mgr.active_account().await {
-                    Some(a) => format!("{:?}", a.address),
-                    None => mgr
-                        .list_accounts()
-                        .await
-                        .first()
-                        .map(|a| format!("{:?}", a.address))
-                        .unwrap_or_default(),
-                };
+                let s = crate::chain_bootstrap::primary_wallet_address_hex(mgr.as_ref()).await;
                 header_account_addr.set(s);
             });
         }
@@ -292,7 +286,12 @@ pub fn WalletApp() -> Element {
             ThemeStyles {}
             div { class: "wallet-shell",
                 header { class: "wallet-logo-block",
-                    h1 { class: "vaughan-logo-gradient", "VAUGHAN" }
+                    img {
+                        class: "vaughan-logo-img",
+                        src: VAUGHAN_LOGO,
+                        alt: "Vaughan",
+                        draggable: "false",
+                    }
                     // Tauri main view shows address inside dashboard; avoid duplicating on Home.
                     if *view.read() != AppView::Dashboard && !header_account_addr.read().is_empty() {
                         div { class: "header-active-account",

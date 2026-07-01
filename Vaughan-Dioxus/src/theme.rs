@@ -67,6 +67,20 @@ html, body {
 
 .wallet-logo-block {
   margin-bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.vaughan-logo-img {
+  display: block;
+  width: 100%;
+  max-width: 320px;
+  height: auto;
+  margin: 0 auto;
+  padding: 8px 0 4px;
+  user-select: none;
+  -webkit-user-drag: none;
 }
 
 /* Gradient wordmark when PNG logo is unavailable (index.css .vaughan-logo) */

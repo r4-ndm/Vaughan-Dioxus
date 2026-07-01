@@ -186,8 +186,24 @@ where
             }
         }
     }
-
     unreachable!("attempts is clamped to >= 1");
+}
+
+/// Map Ambire revert strings to user-friendly messages.
+pub fn humanize_ambire_revert(revert_data: &str) -> Option<String> {
+    if revert_data.contains("INSUFFICIENT_PRIVILEGE") {
+        Some("Signature rejected — signer not authorized on this account.".into())
+    } else if revert_data.contains("PRIVILEGE_NOT_DOWNGRADED") {
+        Some("Transaction would remove the last authorized signer — rejected for safety.".into())
+    } else if revert_data.contains("MUST_PASS_TX") {
+        Some("At least one transaction is required in the batch.".into())
+    } else if revert_data.contains("RECOVERY_NOT_AUTHORIZED") {
+        Some("Recovery key is not authorized for this account.".into())
+    } else if revert_data.contains("FAILED_DEPLOYING") {
+        Some("Smart account deployment failed.".into())
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]

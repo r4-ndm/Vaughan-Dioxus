@@ -129,6 +129,3 @@ pub enum TxStatus {
     Failed,
 }
 
-/// Signature (chain-agnostic)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Signature(pub Vec<u8>);

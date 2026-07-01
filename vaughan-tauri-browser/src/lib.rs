@@ -44,7 +44,6 @@ use tauri::WebviewUrl;
 use tauri::WebviewWindow;
 
 use vaughan_ipc_types::{IpcRequest, IpcResponse};
-use vaughan_trusted_hosts::hostname_is_whitelisted;
 
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
@@ -298,12 +297,11 @@ fn read_wallet_stdin_framed_line(
 
 /// Shared by [`navigate_trusted_dapp`] and wallet stdin control: allowlisted URL, navigate main.
 /// When `reveal` is true, shows and focuses the window (normal dApp open).
-fn navigate_main_trusted_app(
+fn navigate_main_trusted_url(
     app: &tauri::AppHandle,
-    url: String,
+    u: Url,
     reveal: bool,
 ) -> Result<(), String> {
-    let u = parse_allowlisted_navigation_url(&url)?;
     let w = app
         .get_webview_window("main")
         .ok_or_else(|| "main webview not found".to_string())?;
@@ -318,6 +316,15 @@ fn navigate_main_trusted_app(
         let _ = w.set_focus();
     }
     Ok(())
+}
+
+fn navigate_main_trusted_app(
+    app: &tauri::AppHandle,
+    url: String,
+    reveal: bool,
+) -> Result<(), String> {
+    let u = parse_allowlisted_navigation_url(&url)?;
+    navigate_main_trusted_url(app, u, reveal)
 }
 
 fn warm_slot_label(slot_id: u8) -> Option<String> {
@@ -503,21 +510,35 @@ fn parse_allowlisted_navigation_url(raw: &str) -> Result<Url, String> {
     if t.is_empty() {
         return Err("URL is empty".to_string());
     }
-    let u = Url::parse(t).map_err(|e| format!("invalid URL: {e}"))?;
-    let Some(host) = u.host_str() else {
-        return Err("URL must include a host".to_string());
-    };
-    let h = host.trim().to_lowercase();
-    let allowed = match u.scheme() {
-        "https" => hostname_is_whitelisted(host),
-        "http" => h == "localhost" || h == "127.0.0.1",
-        _ => false,
-    };
-    if allowed {
-        Ok(u)
-    } else {
-        Err("URL is not allowlisted for top-level navigation".to_string())
+    vaughan_trusted_hosts::parse_navigation_url(t)
+}
+
+fn validate_allowlisted_top_level_url(u: Url) -> Result<Url, String> {
+    vaughan_trusted_hosts::validate_navigation_url(u.as_str())?;
+    Ok(u)
+}
+
+/// Resolve popup/new-window targets that may be relative (`/path`, `?q=...`) to the current main
+/// page URL before applying the same allowlist rules.
+fn resolve_allowlisted_new_window_target(app: &tauri::AppHandle, raw: &str) -> Result<Url, String> {
+    let t = raw.trim();
+    if t.is_empty() {
+        return Err("URL is empty".to_string());
     }
+    if let Ok(abs) = Url::parse(t) {
+        return validate_allowlisted_top_level_url(abs);
+    }
+
+    let main = app
+        .get_webview_window("main")
+        .ok_or_else(|| "main webview not found".to_string())?;
+    let base = main
+        .url()
+        .map_err(|e| format!("failed to read main webview URL: {e}"))?;
+    let joined = base
+        .join(t)
+        .map_err(|e| format!("invalid popup target URL: {e}"))?;
+    validate_allowlisted_top_level_url(joined)
 }
 
 /// If `--url` is allowlisted (parity with wallet `validate_whitelisted_dapp_url`), load it as
@@ -673,15 +694,14 @@ pub fn run() {
                 let app_newwin = app.handle().clone();
                 wv = wv.on_new_window(move |url, _features| {
                     let url_str = url.to_string();
-                    let allow = parse_allowlisted_navigation_url(&url_str).is_ok();
-                    if allow {
+                    if let Ok(resolved_url) = resolve_allowlisted_new_window_target(&app_newwin, &url_str) {
                         if ON_NEWWIN_NAV_BUSY.swap(true, Ordering::AcqRel) {
                         } else {
                             let app_inner = app_newwin.clone();
-                            let u = url_str;
+                            let resolved = resolved_url.clone();
                             if let Err(e) = app_newwin.run_on_main_thread(move || {
                                 let _clear_busy = ClearOnNewwinBusy;
-                                if let Err(err) = navigate_main_trusted_app(&app_inner, u, true) {
+                                if let Err(err) = navigate_main_trusted_url(&app_inner, resolved, true) {
                                     tracing::warn!(
                                         target: "vaughan_ipc_browser",
                                         err = %err,
@@ -692,6 +712,33 @@ pub fn run() {
                                 ON_NEWWIN_NAV_BUSY.store(false, Ordering::Release);
                                 let _ = e;
                             }
+                        }
+                    } else if url_str == "about:blank" {
+                        let app_inner = app_newwin.clone();
+                        if let Err(e) = app_newwin.run_on_main_thread(move || {
+                            if let Some(w) = app_inner.get_webview_window("main") {
+                                // Some dApps open `about:blank` first, then redirect the returned handle.
+                                // Pull the currently focused anchor href and re-route via Rust allowlist checks.
+                                let _ = w.eval(
+                                    r#"(() => {
+  try {
+    const a = document.activeElement;
+    const href = a && a.href ? String(a.href) : "";
+    if (!href) return;
+    const inv =
+      window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke
+        ? window.__TAURI__.core.invoke
+        : window.__TAURI__ && window.__TAURI__.invoke
+        ? window.__TAURI__.invoke
+        : null;
+    if (!inv) return;
+    inv("navigate_trusted_dapp", { url: href }).catch(() => {});
+  } catch (_) {}
+})();"#,
+                                );
+                            }
+                        }) {
+                            let _ = e;
                         }
                     }
                     NewWindowResponse::Deny

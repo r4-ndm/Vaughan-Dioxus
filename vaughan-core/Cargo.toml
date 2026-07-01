@@ -44,3 +44,7 @@ hardware-wallets = []  # Ledger, Trezor
 [dev-dependencies]
 proptest = "1"
 tempfile = "3"
+
+[build-dependencies]
+serde_json = "1"
+hex = "0.4"

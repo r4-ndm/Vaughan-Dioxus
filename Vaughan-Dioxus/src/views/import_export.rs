@@ -2,16 +2,18 @@ use dioxus::prelude::*;
 
 use futures_util::StreamExt;
 
-use crate::components::SubpageToolbar;
+use crate::components::{AccountOption, SubpageToolbar};
 use crate::services::AppServices;
 use vaughan_core::chains::evm::utils::parse_address;
 use vaughan_core::core::account::AccountManager;
+use vaughan_core::core::AccountType;
 use vaughan_core::error::WalletError;
 use vaughan_core::security::{validate_password, PASSWORD_POLICY_DESCRIPTION};
 
 /// Rate-limit key for import/export password attempts (shared across all actions in this view).
 const IMPORT_EXPORT_PW_KEY: &str = "import_export_password";
 use crate::utils::clipboard::copy_text;
+use crate::utils::password_lockout::import_export_lockout_message;
 
 #[derive(Debug, Clone)]
 pub enum ImportExportCmd {
@@ -37,6 +39,13 @@ pub enum ImportExportCmd {
     ExportPrivateKey {
         password: String,
         address: String,
+    },
+    CreateSmartAccount {
+        password: String,
+        owner_address: String,
+        salt: String,
+        factory_address: String,
+        name: String,
     },
 }
 
@@ -73,6 +82,31 @@ pub fn ImportExportView(cmd_tx: Coroutine<ImportExportCmd>, on_back: Callback<()
         let mut modal_open = modal_open;
         move || *modal_open.write() = true
     };
+
+    let services: AppServices = use_context();
+    let eoa_accounts = use_signal(Vec::new);
+    let _load_eoas = use_resource(move || {
+        let services = services.clone();
+        let mut eoa_accounts = eoa_accounts;
+        async move {
+            let accounts = services.account_manager.list_accounts().await;
+            let eoas = accounts
+                .into_iter()
+                .filter(|a| matches!(a.account_type, AccountType::Hd | AccountType::Imported))
+                .map(|a| AccountOption {
+                    name: a.name,
+                    address: vaughan_core::core::address_to_hex(a.address),
+                    account_type: a.account_type,
+                })
+                .collect::<Vec<_>>();
+            eoa_accounts.set(eoas);
+        }
+    });
+
+    let mut owner_addr_in = use_signal(|| "".to_string());
+    let mut scw_name_in = use_signal(|| "Smart Account".to_string());
+    let mut factory_addr_in = use_signal(|| "".to_string());
+    let mut salt_in = use_signal(|| "".to_string());
 
     rsx! {
         div { style: "display: flex; flex-direction: column; gap: 16px;",
@@ -232,6 +266,67 @@ pub fn ImportExportView(cmd_tx: Coroutine<ImportExportCmd>, on_back: Callback<()
                 }
             }
 
+            // ----- Create Smart Account -----
+            div { style: "border: 1px solid var(--border); background: var(--card); padding: 14px;",
+                h3 { style: "margin: 0 0 8px 0;", "Create Smart Account" }
+                p { class: "muted", style: "margin: 0 0 10px 0; font-size: 12px;",
+                    "Derives and adds a deterministically-derived smart contract account using CREATE2 from a parent EOA owner."
+                }
+                
+                p { class: "muted", style: "margin: 0; font-size: 12px;", "Owner EOA Address" }
+                select {
+                    value: "{owner_addr_in.read()}",
+                    onchange: move |e| *owner_addr_in.write() = e.value(),
+                    style: "width: 100%; margin-top: 8px; padding: 10px 12px; background: var(--bg); border: 1px solid var(--border); color: var(--fg); font-size: 12px;",
+                    option { value: "", "Select owner account..." }
+                    for acc in eoa_accounts.read().iter() {
+                        option { value: "{acc.address}", "{acc.name} ({short_addr(&acc.address)})" }
+                    }
+                }
+
+                p { class: "muted", style: "margin: 10px 0 0 0; font-size: 12px;", "Account name (optional)" }
+                input {
+                    value: "{scw_name_in.read()}",
+                    oninput: move |e| *scw_name_in.write() = e.value(),
+                    style: "width: 100%; margin-top: 8px; padding: 10px 12px; background: var(--bg); border: 1px solid var(--border); color: var(--fg); font-size: 12px;",
+                    placeholder: "My Smart Account"
+                }
+
+                p { class: "muted", style: "margin: 10px 0 0 0; font-size: 12px;", "Factory address (optional, defaults to Ambire v2)" }
+                input {
+                    value: "{factory_addr_in.read()}",
+                    oninput: move |e| *factory_addr_in.write() = e.value(),
+                    style: "width: 100%; margin-top: 8px; padding: 10px 12px; background: var(--bg); border: 1px solid var(--border); color: var(--fg); font-family: var(--font-mono); font-size: 12px;",
+                    placeholder: "0xB0076969..."
+                }
+
+                p { class: "muted", style: "margin: 10px 0 0 0; font-size: 12px;", "Salt (optional, random if empty)" }
+                input {
+                    value: "{salt_in.read()}",
+                    oninput: move |e| *salt_in.write() = e.value(),
+                    style: "width: 100%; margin-top: 8px; padding: 10px 12px; background: var(--bg); border: 1px solid var(--border); color: var(--fg); font-family: var(--font-mono); font-size: 12px;",
+                    placeholder: "12345"
+                }
+
+                div { class: "btn-row",
+                    button {
+                        class: "btn",
+                        disabled: *rt.busy.read() || owner_addr_in.read().is_empty(),
+                        onclick: move |_| {
+                            rt.error.set(None);
+                            cmd_tx.send(ImportExportCmd::CreateSmartAccount {
+                                password: password.read().clone(),
+                                owner_address: owner_addr_in.read().clone(),
+                                salt: salt_in.read().clone(),
+                                factory_address: factory_addr_in.read().clone(),
+                                name: scw_name_in.read().clone(),
+                            });
+                        },
+                        "Derive Smart Account"
+                    }
+                }
+            }
+
             if *modal_open.read() {
                 div {
                     style: "position: fixed; inset: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; padding: 16px;",
@@ -306,13 +401,8 @@ pub fn use_import_export_coroutine() -> Coroutine<ImportExportCmd> {
                     .is_locked(IMPORT_EXPORT_PW_KEY)
                     .await
                 {
-                    let mins = services
-                        .password_attempt_limiter
-                        .lockout_duration()
-                        .as_secs()
-                        / 60;
-                    rt2.error.set(Some(format!(
-                        "Too many failed password attempts. Try again in about {mins} minutes."
+                    rt2.error.set(Some(import_export_lockout_message(
+                        services.password_attempt_limiter.lockout_duration(),
                     )));
                     rt2.busy.set(false);
                     continue;
@@ -370,6 +460,39 @@ pub fn use_import_export_coroutine() -> Coroutine<ImportExportCmd> {
                             rt2.revealed_secret.set(Some(format!("0x{pk}")));
                             Ok(())
                         }
+                        ImportExportCmd::CreateSmartAccount {
+                            password,
+                            owner_address,
+                            salt,
+                            factory_address,
+                            name,
+                        } => {
+                            if !password.trim().is_empty() {
+                                services.set_session_password(password.clone()).await;
+                            }
+                            let owner_addr = parse_address(&owner_address)?;
+                            let salt_u256 = if salt.trim().is_empty() {
+                                vaughan_core::core::smart_account::generate_salt()
+                            } else {
+                                alloy::primitives::U256::from_str_radix(salt.trim(), 10)
+                                    .map_err(|_| WalletError::InvalidData("Invalid salt integer".into()))?
+                            };
+                            let factory_addr = if factory_address.trim().is_empty() {
+                                "0xB0076969502A13D2D3256A8F6d81CA6C5a4f6D81".parse::<alloy::primitives::Address>()
+                                    .map_err(|_| WalletError::InvalidAddress("Default factory invalid".into()))?
+                            } else {
+                                parse_address(&factory_address)?
+                            };
+                            let _acct = mgr.create_smart_account(
+                                owner_addr,
+                                salt_u256,
+                                factory_addr,
+                                vaughan_core::core::smart_account::AMBIRE_ACCOUNT_BYTECODE,
+                                if name.trim().is_empty() { None } else { Some(name) },
+                            )
+                            .await?;
+                            Ok(())
+                        }
                     }
                 }
                 .await;
@@ -383,13 +506,8 @@ pub fn use_import_export_coroutine() -> Coroutine<ImportExportCmd> {
                         {
                             Ok(()) => rt2.error.set(Some(e.user_message())),
                             Err(_) => {
-                                let mins = services
-                                    .password_attempt_limiter
-                                    .lockout_duration()
-                                    .as_secs()
-                                    / 60;
-                                rt2.error.set(Some(format!(
-                                    "Too many failed password attempts. Try again in about {mins} minutes."
+                                rt2.error.set(Some(import_export_lockout_message(
+                                    services.password_attempt_limiter.lockout_duration(),
                                 )));
                             }
                         }
@@ -406,4 +524,11 @@ pub fn use_import_export_coroutine() -> Coroutine<ImportExportCmd> {
             }
         }
     })
+}
+
+fn short_addr(a: &str) -> String {
+    if a.len() < 14 {
+        return a.to_string();
+    }
+    format!("{}...{}", &a[..8], &a[a.len() - 4..])
 }

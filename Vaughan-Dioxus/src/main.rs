@@ -4,6 +4,7 @@ mod app;
 mod browser;
 mod chain_bootstrap;
 mod pulsex_local;
+mod wallet_selectors;
 mod components;
 mod dapp_approval;
 mod services;

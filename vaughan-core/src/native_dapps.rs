@@ -106,7 +106,7 @@ pub async fn load_pulsex_manifest(prefer_remote: bool) -> Result<PulsexManifest,
 
 fn native_dapps_data_dir() -> Result<PathBuf, WalletError> {
     let base = dirs::data_dir().ok_or_else(|| WalletError::StorageError("no data_dir".into()))?;
-    Ok(base.join("vaughan").join("native_dapps"))
+    Ok(base.join("vaughan-dioxus").join("native_dapps"))
 }
 
 fn select_artifact<'a>(

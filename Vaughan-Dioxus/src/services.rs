@@ -28,7 +28,7 @@ impl AppServices {
         let persistence = PersistenceHandle::open().map_err(|e| {
             WalletError::StorageError(format!("Failed to open wallet state: {e}"))
         })?;
-        let account_manager = AccountManager::new("vaughan-wallet", persistence.clone())
+        let account_manager = AccountManager::new("vaughan-dioxus-wallet", persistence.clone())
             .map_err(|e| {
                 WalletError::Other(format!(
                     "Failed to initialise OS keychain (gnome-keyring / KWallet / Keychain): {e}"

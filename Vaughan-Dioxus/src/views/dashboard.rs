@@ -6,16 +6,18 @@ use std::time::Duration;
 use futures_util::StreamExt;
 
 use vaughan_core::chains::{ChainAdapter, TokenInfo};
-use vaughan_core::core::WalletState;
+use vaughan_core::core::{AccountType, WalletState};
 use vaughan_core::error::WalletError;
 use vaughan_core::monitoring::BalanceEvent;
 use vaughan_core::monitoring::BalanceWatcher;
 
 use crate::app::AppRuntime;
+use crate::chain_bootstrap::current_network_key;
 use crate::components::{
     AccountOption, AccountSelector, AddressDisplay, NetworkOption, NetworkSelector,
 };
 use crate::services::AppServices;
+use crate::wallet_selectors::{set_active_account_and_refresh, spawn_wallet_selector_poll};
 
 #[derive(Debug, Clone)]
 pub enum DashboardCmd {
@@ -23,29 +25,6 @@ pub enum DashboardCmd {
     RefreshOnce,
     SetActiveNetwork(String),
     SetActiveAccount(String),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct AdapterNetworkKey {
-    id: String,
-    rpc_url: String,
-    chain_id: u64,
-}
-
-async fn current_network_key(services: &AppServices) -> AdapterNetworkKey {
-    if let Some(n) = services.network_service.active_network().await {
-        AdapterNetworkKey {
-            id: n.id,
-            rpc_url: n.rpc_url,
-            chain_id: n.chain_id,
-        }
-    } else {
-        AdapterNetworkKey {
-            id: "ethereum".into(),
-            rpc_url: String::new(),
-            chain_id: 1,
-        }
-    }
 }
 
 fn format_balance(b: &vaughan_core::chains::Balance) -> String {
@@ -67,7 +46,7 @@ pub fn DashboardView(cmd_tx: Coroutine<DashboardCmd>, on_go_send: Callback<()>) 
     let active_network_id = use_signal(|| None::<String>);
     let accounts = use_signal(Vec::<AccountOption>::new);
     let active_account_address = use_signal(|| None::<String>);
-    let mut tracked_tokens = use_signal(Vec::<TokenInfo>::new);
+    let tracked_tokens = use_signal(Vec::<TokenInfo>::new);
     let selectors_booted = use_signal(|| false);
     let watcher_boot_sent = use_signal(|| false);
     let mut assets_open = use_signal(|| false);
@@ -89,50 +68,24 @@ pub fn DashboardView(cmd_tx: Coroutine<DashboardCmd>, on_go_send: Callback<()>) 
 
     use_effect({
         let services = services.clone();
-        let mut networks = networks;
-        let mut active_network_id = active_network_id;
-        let mut accounts = accounts;
-        let mut active_account_address = active_account_address;
         let mut selectors_booted = selectors_booted;
+        let mut tracked_tokens = tracked_tokens;
         move || {
             if selectors_booted() {
                 return;
             }
             selectors_booted.set(true);
             let services = services.clone();
+            spawn_wallet_selector_poll(
+                services.clone(),
+                networks,
+                active_network_id,
+                accounts,
+                active_account_address,
+                None,
+            );
             spawn(async move {
                 loop {
-                    let nets = services
-                        .network_service
-                        .list_networks()
-                        .await
-                        .into_iter()
-                        .map(|n| NetworkOption {
-                            id: n.id,
-                            name: n.name,
-                            chain_id: n.chain_id,
-                        })
-                        .collect::<Vec<_>>();
-                    let active_net = services
-                        .network_service
-                        .active_network()
-                        .await
-                        .map(|n| n.id);
-                    let accts = services
-                        .account_manager
-                        .list_accounts()
-                        .await
-                        .into_iter()
-                        .map(|a| AccountOption {
-                            name: a.name,
-                            address: format!("{:?}", a.address),
-                        })
-                        .collect::<Vec<_>>();
-                    let active_acct = services
-                        .account_manager
-                        .active_account()
-                        .await
-                        .map(|a| format!("{:?}", a.address));
                     let chain_id = services
                         .network_service
                         .active_network()
@@ -140,12 +93,9 @@ pub fn DashboardView(cmd_tx: Coroutine<DashboardCmd>, on_go_send: Callback<()>) 
                         .map(|n| n.chain_id)
                         .unwrap_or(1);
                     let toks = services.token_manager.list(chain_id).await;
-                    networks.set(nets);
-                    active_network_id.set(active_net);
-                    accounts.set(accts);
-                    active_account_address.set(active_acct);
                     tracked_tokens.set(toks);
-                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    let interval = crate::wallet_selectors::selector_poll_interval(&services).await;
+                    tokio::time::sleep(interval).await;
                 }
             });
         }
@@ -184,6 +134,10 @@ pub fn DashboardView(cmd_tx: Coroutine<DashboardCmd>, on_go_send: Callback<()>) 
     };
 
     let addr_for_display = active_account_address().unwrap_or_default();
+    let active_account_type = accounts()
+        .iter()
+        .find(|a| active_account_address().as_deref() == Some(a.address.as_str()))
+        .map(|a| a.account_type);
 
     rsx! {
         div {
@@ -193,9 +147,16 @@ pub fn DashboardView(cmd_tx: Coroutine<DashboardCmd>, on_go_send: Callback<()>) 
 
             if !addr_for_display.is_empty() {
                 div {
-                    style: "padding-top: 4px;",
+                    style: "padding-top: 4px; display: flex; flex-direction: column; gap: 8px;",
                     onclick: move |e| e.stop_propagation(),
                     AddressDisplay { address: addr_for_display.clone() }
+                    if let Some(AccountType::SmartAccount) = active_account_type {
+                        div {
+                            style: "font-size: 11px; background: rgba(59, 130, 246, 0.15); border: 1px solid rgba(59, 130, 246, 0.3); border-radius: 4px; padding: 8px 12px; color: #60a5fa; display: flex; align-items: center; gap: 8px;",
+                            span { style: "font-weight: bold; background: #2563eb; color: white; padding: 2px 6px; border-radius: 3px; font-size: 9px; text-transform: uppercase;", "Smart Account" }
+                            span { style: "opacity: 0.85;", "Deploys automatically on first transaction" }
+                        }
+                    }
                 }
             }
 
@@ -337,7 +298,7 @@ pub fn use_dashboard_coroutine() -> Coroutine<DashboardCmd> {
                         return;
                     }
                 };
-            let mut adapter_network_key = current_network_key(&services).await;
+            let mut adapter_network_key = current_network_key(services.network_service.as_ref()).await;
             crate::chain_bootstrap::register_default_evm_adapter(&wallet_state, adapter.clone())
                 .await;
 
@@ -410,31 +371,18 @@ pub fn use_dashboard_coroutine() -> Coroutine<DashboardCmd> {
                                 }
                             }
                             DashboardCmd::SetActiveAccount(address) => {
-                                let acc = services
-                                    .account_manager
-                                    .list_accounts()
-                                    .await
-                                    .into_iter()
-                                    .find(|a| format!("{:?}", a.address) == address);
-                                let Some(acc) = acc else { continue; };
-                                if services.account_manager.set_active(acc.id).await.is_err() {
-                                    continue;
-                                }
-                                if wallet_state.set_active_account_by_id(acc.id).await.is_err() {
-                                    wallet_state.add_account(acc.clone()).await;
-                                    let _ = wallet_state.set_active_account_by_id(acc.id).await;
-                                }
-                                if let Ok(b) = wallet_state.get_active_balance().await {
-                                    runtime.balance.set(Some(b.clone()));
-                                    runtime
-                                        .balance_events
-                                        .with_mut(|v: &mut Vec<BalanceEvent>| v.push(BalanceEvent { balance: b }));
-                                }
+                                set_active_account_and_refresh(
+                                    &services,
+                                    wallet_state.as_ref(),
+                                    &mut runtime,
+                                    &address,
+                                )
+                                .await;
                             }
                         }
                     }
                     _ = network_tick.tick() => {
-                        let key = current_network_key(&services).await;
+                        let key = current_network_key(services.network_service.as_ref()).await;
                         if key != adapter_network_key {
                             match crate::chain_bootstrap::evm_adapter_for_network_service(
                                 services.network_service.as_ref(),

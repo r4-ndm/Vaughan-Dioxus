@@ -20,7 +20,7 @@ use uuid::Uuid;
 pub fn vaughan_state_json_path() -> PathBuf {
     let base = dirs::data_dir()
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-    base.join("vaughan").join("state.json")
+    base.join("vaughan-dioxus").join("state.json")
 }
 
 /// Owns the in-memory [`PersistedState`] and performs full-file atomic saves.
@@ -317,6 +317,7 @@ fn migrate_persisted_state_from_json(
             address,
             account_type: row.account_type,
             index: row.index,
+            smart_account: None,
         });
     }
 

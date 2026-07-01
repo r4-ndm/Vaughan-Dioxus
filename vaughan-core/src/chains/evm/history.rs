@@ -45,18 +45,19 @@ fn parse_status(is_error: Option<&str>) -> TxStatus {
     }
 }
 
-pub async fn fetch_txlist(
+async fn fetch_explorer_account_txs(
     net: &EvmNetworkConfig,
     address: &str,
     limit: u32,
-) -> Result<Vec<TxRecord>, WalletError> {
+    action: &str,
+) -> Result<Vec<ExplorerTx>, WalletError> {
     let api = net
         .explorer_api_url
         .as_deref()
         .ok_or_else(|| WalletError::Other("Explorer API not configured for this network".into()))?;
 
     let url = format!(
-        "{api}?module=account&action=txlist&address={address}&startblock=0&endblock=99999999&sort=desc&page=1&offset={limit}"
+        "{api}?module=account&action={action}&address={address}&startblock=0&endblock=99999999&sort=desc&page=1&offset={limit}"
     );
 
     let resp = reqwest::get(&url)
@@ -74,25 +75,50 @@ pub async fn fetch_txlist(
         return Ok(vec![]);
     }
 
-    let txs: Vec<ExplorerTx> = serde_json::from_value(body.result)
-        .map_err(|e| WalletError::RpcError(format!("Explorer parse failed: {}", e)))?;
+    serde_json::from_value(body.result)
+        .map_err(|e| WalletError::RpcError(format!("Explorer parse failed: {}", e)))
+}
 
+fn explorer_tx_to_record(t: ExplorerTx, is_token_transfer: bool) -> TxRecord {
+    TxRecord {
+        hash: t.hash,
+        from: t.from,
+        to: t.to,
+        value: t.value,
+        status: parse_status(t.is_error.as_deref()),
+        block_number: parse_u64(&t.block_number),
+        timestamp: parse_u64(&t.time_stamp),
+        gas_used: t.gas_used.as_deref().and_then(parse_u64),
+        token_symbol: if is_token_transfer {
+            t.token_symbol
+        } else {
+            None
+        },
+        token_address: if is_token_transfer {
+            t.contract_address
+        } else {
+            None
+        },
+        is_token_transfer,
+        token_decimals: if is_token_transfer {
+            t.token_decimal
+                .as_deref()
+                .and_then(|s| s.parse::<u8>().ok())
+        } else {
+            None
+        },
+    }
+}
+
+pub async fn fetch_txlist(
+    net: &EvmNetworkConfig,
+    address: &str,
+    limit: u32,
+) -> Result<Vec<TxRecord>, WalletError> {
+    let txs = fetch_explorer_account_txs(net, address, limit, "txlist").await?;
     Ok(txs
         .into_iter()
-        .map(|t| TxRecord {
-            hash: t.hash,
-            from: t.from,
-            to: t.to,
-            value: t.value,
-            status: parse_status(t.is_error.as_deref()),
-            block_number: parse_u64(&t.block_number),
-            timestamp: parse_u64(&t.time_stamp),
-            gas_used: t.gas_used.as_deref().and_then(parse_u64),
-            token_symbol: None,
-            token_address: None,
-            is_token_transfer: false,
-            token_decimals: None,
-        })
+        .map(|t| explorer_tx_to_record(t, false))
         .collect())
 }
 
@@ -101,50 +127,9 @@ pub async fn fetch_tokentx(
     address: &str,
     limit: u32,
 ) -> Result<Vec<TxRecord>, WalletError> {
-    let api = net
-        .explorer_api_url
-        .as_deref()
-        .ok_or_else(|| WalletError::Other("Explorer API not configured for this network".into()))?;
-
-    let url = format!(
-        "{api}?module=account&action=tokentx&address={address}&startblock=0&endblock=99999999&sort=desc&page=1&offset={limit}"
-    );
-
-    let resp = reqwest::get(&url)
-        .await
-        .map_err(|e| WalletError::NetworkError(e.to_string()))?;
-
-    let body: ExplorerResponse<serde_json::Value> = resp
-        .json()
-        .await
-        .map_err(|e| WalletError::RpcError(e.to_string()))?;
-
-    let _message = body.message;
-    if body.status != "1" {
-        return Ok(vec![]);
-    }
-
-    let txs: Vec<ExplorerTx> = serde_json::from_value(body.result)
-        .map_err(|e| WalletError::RpcError(format!("Explorer parse failed: {}", e)))?;
-
+    let txs = fetch_explorer_account_txs(net, address, limit, "tokentx").await?;
     Ok(txs
         .into_iter()
-        .map(|t| TxRecord {
-            hash: t.hash,
-            from: t.from,
-            to: t.to,
-            value: t.value,
-            status: parse_status(t.is_error.as_deref()),
-            block_number: parse_u64(&t.block_number),
-            timestamp: parse_u64(&t.time_stamp),
-            gas_used: t.gas_used.as_deref().and_then(parse_u64),
-            token_symbol: t.token_symbol,
-            token_address: t.contract_address,
-            is_token_transfer: true,
-            token_decimals: t
-                .token_decimal
-                .as_deref()
-                .and_then(|s| s.parse::<u8>().ok()),
-        })
+        .map(|t| explorer_tx_to_record(t, true))
         .collect())
 }

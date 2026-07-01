@@ -35,7 +35,6 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use url::Url;
-pub use vaughan_trusted_hosts::hostname_is_whitelisted;
 
 use crate::services::{shared_services, AppServices};
 use crate::wallet_ipc::{self, WalletIpcServer};
@@ -1154,29 +1153,9 @@ impl BrowserInner {
     }
 }
 
-/// Validates URL scheme and host against the Tauri-parity trusted list. Returns normalized URL string.
+/// Validates URL scheme and host against the canonical trusted list. Returns normalized URL string.
 pub fn validate_whitelisted_dapp_url(url_str: &str) -> Result<String, String> {
-    let u = Url::parse(url_str.trim()).map_err(|e| e.to_string())?;
-    let host = u.host_str().ok_or("URL missing host")?;
-    let h = host.trim().to_lowercase();
-
-    match u.scheme() {
-        "https" => {
-            if !hostname_is_whitelisted(host) {
-                return Err("That site is not on the trusted dApp list".into());
-            }
-        }
-        "http" => {
-            if h != "localhost" && h != "127.0.0.1" {
-                return Err(
-                    "Only https:// dApps are allowed (except http://localhost and http://127.0.0.1)."
-                        .into(),
-                );
-            }
-        }
-        _ => return Err("Invalid URL scheme for a trusted dApp.".into()),
-    }
-    Ok(u.to_string())
+    vaughan_trusted_hosts::validate_navigation_url(url_str)
 }
 
 /// Opens a trusted dApp by spawning a fresh browser child process (window).
@@ -1192,6 +1171,24 @@ pub fn open_trusted_dapp_url_new_window(url_str: &str) -> Result<(), String> {
          (or build the whole workspace), then click again."
             .to_string()
     })?;
+
+    // Prefer reusing the already-running wallet browser process/window for trusted navigations.
+    // If that fails (cold start, broken pipe, crashed child), fall back to a fresh spawn below.
+    if let Some(state) = BROWSER_STATE.get() {
+        if let Ok(mut inner) = state.lock() {
+            inner.bin = bin.clone();
+            if inner.child.is_none() {
+                let _ = inner.spawn(None);
+            }
+            if inner
+                .try_send_navigate_trusted(&full, true)
+                .is_ok()
+            {
+                inner.last_url = Some(full);
+                return Ok(());
+            }
+        }
+    }
 
     let mut cmd = Command::new(&bin);
     let warmup_remaining_secs = warmup_hint_remaining_secs();

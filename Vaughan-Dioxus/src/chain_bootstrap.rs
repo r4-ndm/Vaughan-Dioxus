@@ -8,7 +8,7 @@ use vaughan_core::chains::evm::EvmAdapter;
 use vaughan_core::chains::{ChainAdapter, ChainType};
 use vaughan_core::core::account::AccountManager;
 use vaughan_core::core::{
-    Account, AccountId, AccountType, NetworkConfig, NetworkService, WalletState,
+    address_to_hex, Account, AccountId, AccountType, NetworkConfig, NetworkService, WalletState,
 };
 use vaughan_core::error::WalletError;
 
@@ -43,12 +43,37 @@ pub async fn evm_adapter_for_network_service(
 /// `0x`-prefixed address for RPC calls: persisted active/first account, else a well-known mainnet address.
 pub async fn primary_wallet_address_hex(mgr: &AccountManager) -> String {
     if let Some(a) = mgr.active_account().await {
-        return format!("{:?}", a.address);
+        return address_to_hex(a.address);
     }
     if let Some(a) = mgr.list_accounts().await.first() {
-        return format!("{:?}", a.address);
+        return address_to_hex(a.address);
     }
     EXPLORER_FALLBACK_ADDRESS.to_string()
+}
+
+/// Network identity used to detect adapter changes (dashboard, history).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdapterNetworkKey {
+    pub id: String,
+    pub rpc_url: String,
+    pub chain_id: u64,
+}
+
+/// Current active network key, defaulting to Ethereum mainnet when none is selected.
+pub async fn current_network_key(network_service: &NetworkService) -> AdapterNetworkKey {
+    if let Some(n) = network_service.active_network().await {
+        AdapterNetworkKey {
+            id: n.id,
+            rpc_url: n.rpc_url,
+            chain_id: n.chain_id,
+        }
+    } else {
+        AdapterNetworkKey {
+            id: "ethereum".into(),
+            rpc_url: String::new(),
+            chain_id: 1,
+        }
+    }
 }
 
 /// Register default EVM adapter and unlock [`WalletState`] (shared dashboard/history setup).
@@ -78,6 +103,7 @@ pub async fn sync_wallet_state_with_account_manager(
                 address: addr,
                 account_type: AccountType::Imported,
                 index: None,
+                smart_account: None,
             };
             accounts.push(dummy.clone());
             wallet_state

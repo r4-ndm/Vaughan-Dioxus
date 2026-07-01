@@ -1,12 +1,10 @@
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Write};
-use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use alloy::signers::local::PrivateKeySigner;
 use alloy::signers::SignerSync;
 use interprocess::local_socket::traits::Listener as _;
 use interprocess::local_socket::{ListenerOptions, ToFsName};
@@ -20,8 +18,17 @@ use crate::dapp_approval::{broker, ApprovalDecision};
 use crate::services::AppServices;
 use vaughan_core::chains::EvmTransaction;
 use vaughan_core::core::transaction::TransactionService;
-use vaughan_core::core::AccountType;
-use vaughan_core::security::{derive_account, mnemonic_to_seed};
+use vaughan_core::core::{address_to_hex, load_signer_for_address, parse_optional_u64_decimal, AccountType};
+use vaughan_core::core::ambire_abi::AmbireAccount;
+use vaughan_core::core::smart_account::{build_init_code, AMBIRE_ACCOUNT_BYTECODE};
+use vaughan_core::core::scw_transaction::{
+    build_signed_execute, build_signed_deploy_and_execute,
+    get_smart_account_nonce, is_account_deployed,
+};
+use alloy::primitives::U256;
+use vaughan_core::error::WalletError;
+use vaughan_core::chains::evm::utils::parse_address;
+use std::str::FromStr;
 
 /// Set to true after a valid dApp-browser IPC handshake completes (see `handle_connection`).
 /// Paired with a condvar so callers can wake as soon as the handshake completes instead of polling.
@@ -153,7 +160,7 @@ fn collect_accounts_for_ipc(
 
     let from_mgr = runtime.block_on(services.account_manager.list_accounts());
     for a in from_mgr {
-        let addr = format!("{:?}", a.address);
+        let addr = address_to_hex(a.address);
         if seen.insert(addr.to_lowercase()) {
             out.push(AccountInfo {
                 address: addr,
@@ -164,7 +171,7 @@ fn collect_accounts_for_ipc(
 
     let from_ws = runtime.block_on(services.wallet_state.accounts());
     for a in from_ws {
-        let addr = format!("{:?}", a.address);
+        let addr = address_to_hex(a.address);
         if seen.insert(addr.to_lowercase()) {
             out.push(AccountInfo {
                 address: addr,
@@ -379,11 +386,13 @@ fn sign_message_response(
         );
     };
 
-    let signer = match load_signer_for_address(services, runtime, &payload.address, &password) {
+    let signer = match runtime.block_on(load_signer_for_address(
+        services.account_manager.as_ref(),
+        &password,
+        &payload.address,
+    )) {
         Ok(s) => s,
-        Err(msg) => {
-            return ipc_error(4100, msg);
-        }
+        Err(e) => return ipc_error(4100, e.user_message()),
     };
 
     let msg_bytes = if payload.message.starts_with("0x") {
@@ -416,91 +425,126 @@ fn sign_transaction_response(
         );
     };
 
-    let signer = match load_signer_for_address(services, runtime, &payload.from, &password) {
+    let needle = payload.from.trim();
+    let account = match runtime.block_on(async {
+        services.account_manager
+            .list_accounts()
+            .await
+            .into_iter()
+            .find(|a| address_to_hex(a.address).eq_ignore_ascii_case(needle))
+            .ok_or_else(|| {
+                WalletError::AccountNotFound("Requested address not found in wallet accounts".into())
+            })
+    }) {
+        Ok(a) => a,
+        Err(e) => return ipc_error(4100, e.user_message()),
+    };
+
+    let signer = match runtime.block_on(load_signer_for_address(
+        services.account_manager.as_ref(),
+        &password,
+        &payload.from,
+    )) {
         Ok(s) => s,
-        Err(msg) => {
-            return ipc_error(4100, msg);
-        }
+        Err(e) => return ipc_error(4100, e.user_message()),
     };
 
-    let gas_limit = match parse_optional_u64_decimal(payload.gas_limit.as_deref()) {
-        Ok(v) => v,
-        Err(msg) => {
-            return ipc_error(4200, msg);
+    if account.account_type == AccountType::SmartAccount {
+        let result = runtime.block_on(async {
+            let active_network = services.network_service.active_network().await
+                .ok_or_else(|| WalletError::UnsupportedChain("No active network".into()))?;
+            let transport = alloy::transports::http::Http::new(url::Url::parse(&active_network.rpc_url).unwrap());
+            let client = alloy::rpc::client::RpcClient::new(transport, true);
+            let provider = alloy::providers::RootProvider::new(client);
+
+            let is_deployed = is_account_deployed(account.address, &provider).await?;
+            let info = account.smart_account.as_ref().unwrap();
+
+            let inner_tx = AmbireAccount::Transaction {
+                to: parse_address(&payload.to)?,
+                value: U256::from_str(&payload.value).map_err(|_| WalletError::InvalidAmount("Invalid wei amount".into()))?,
+                data: payload.data
+                    .map(|d| {
+                        let stripped = d.trim_start_matches("0x");
+                        hex::decode(stripped)
+                            .map(alloy::primitives::Bytes::from)
+                            .unwrap_or_default()
+                    })
+                    .unwrap_or_default(),
+            };
+
+            let calldata = if !is_deployed {
+                let init_code = build_init_code(info.owner_address, AMBIRE_ACCOUNT_BYTECODE);
+                build_signed_deploy_and_execute(
+                    &signer,
+                    account.address,
+                    init_code,
+                    info.salt,
+                    vec![inner_tx],
+                    payload.chain_id,
+                )
+                .await?
+            } else {
+                let nonce = get_smart_account_nonce(account.address, &provider).await?;
+                build_signed_execute(
+                    &signer,
+                    account.address,
+                    vec![inner_tx],
+                    nonce,
+                    payload.chain_id,
+                )
+                .await?
+            };
+
+            let outer_to = if is_deployed { account.address } else { info.factory };
+            let outer_tx = EvmTransaction {
+                from: format!("{:?}", info.owner_address),
+                to: format!("{:?}", outer_to),
+                value: "0".into(),
+                data: Some(format!("0x{}", hex::encode(&calldata))),
+                gas_limit: parse_optional_u64_decimal(payload.gas_limit.as_deref()).unwrap_or_default(),
+                gas_price: payload.gas_price,
+                max_fee_per_gas: payload.max_fee_per_gas,
+                max_priority_fee_per_gas: payload.max_priority_fee_per_gas,
+                nonce: None,
+                chain_id: payload.chain_id,
+            };
+
+            let tx_service = TransactionService::new();
+            tx_service.sign_evm_transaction(&signer, &outer_tx).await
+        });
+
+        match result {
+            Ok(raw) => IpcResponse::SignedTransaction(raw),
+            Err(err) => ipc_error(4200, format!("SignTransaction failed: {err}")),
         }
-    };
-    let nonce = match parse_optional_u64_decimal(payload.nonce.as_deref()) {
-        Ok(v) => v,
-        Err(msg) => {
-            return ipc_error(4200, msg);
-        }
-    };
+    } else {
+        let gas_limit = match parse_optional_u64_decimal(payload.gas_limit.as_deref()) {
+            Ok(v) => v,
+            Err(e) => return ipc_error(4200, e.user_message()),
+        };
+        let nonce = match parse_optional_u64_decimal(payload.nonce.as_deref()) {
+            Ok(v) => v,
+            Err(e) => return ipc_error(4200, e.user_message()),
+        };
 
-    let evm_tx = EvmTransaction {
-        from: payload.from,
-        to: payload.to,
-        value: payload.value,
-        data: payload.data,
-        gas_limit,
-        gas_price: payload.gas_price,
-        max_fee_per_gas: payload.max_fee_per_gas,
-        max_priority_fee_per_gas: payload.max_priority_fee_per_gas,
-        nonce,
-        chain_id: payload.chain_id,
-    };
+        let evm_tx = EvmTransaction {
+            from: payload.from,
+            to: payload.to,
+            value: payload.value,
+            data: payload.data,
+            gas_limit,
+            gas_price: payload.gas_price,
+            max_fee_per_gas: payload.max_fee_per_gas,
+            max_priority_fee_per_gas: payload.max_priority_fee_per_gas,
+            nonce,
+            chain_id: payload.chain_id,
+        };
 
-    let tx_service = TransactionService::new();
-    match runtime.block_on(tx_service.sign_evm_transaction(&signer, &evm_tx)) {
-        Ok(raw) => IpcResponse::SignedTransaction(raw),
-        Err(err) => ipc_error(4200, format!("SignTransaction failed: {err}")),
-    }
-}
-
-fn load_signer_for_address(
-    services: &AppServices,
-    runtime: &tokio::runtime::Runtime,
-    address: &str,
-    password: &str,
-) -> Result<PrivateKeySigner, String> {
-    let accounts = runtime.block_on(services.account_manager.list_accounts());
-    let account = accounts
-        .into_iter()
-        .find(|a| format!("{:?}", a.address).eq_ignore_ascii_case(address))
-        .ok_or_else(|| "Requested address not found in wallet accounts".to_string())?;
-
-    match account.account_type {
-        AccountType::Imported => {
-            let pk = services
-                .account_manager
-                .export_private_key(password, account.address)
-                .map_err(|e| format!("Failed to load imported key: {e}"))?;
-            PrivateKeySigner::from_str(pk.trim_start_matches("0x"))
-                .map_err(|e| format!("Invalid private key material: {e}"))
-        }
-        AccountType::Hd => {
-            let idx = account.index.unwrap_or(0);
-            let mnemonic = services
-                .account_manager
-                .export_wallet_mnemonic(password)
-                .map_err(|e| format!("Failed to load mnemonic from keyring: {e}"))?;
-            let seed = mnemonic_to_seed(&mnemonic, None)
-                .map_err(|e| format!("Failed to derive seed: {e}"))?;
-            derive_account(&seed, idx).map_err(|e| format!("Failed to derive account key: {e}"))
-        }
-    }
-}
-
-fn parse_optional_u64_decimal(value: Option<&str>) -> Result<Option<u64>, String> {
-    match value {
-        None => Ok(None),
-        Some(v) => {
-            let t = v.trim();
-            if t.is_empty() {
-                return Ok(None);
-            }
-            t.parse::<u64>()
-                .map(Some)
-                .map_err(|_| format!("Invalid u64 decimal value: {t}"))
+        let tx_service = TransactionService::new();
+        match runtime.block_on(tx_service.sign_evm_transaction(&signer, &evm_tx)) {
+            Ok(raw) => IpcResponse::SignedTransaction(raw),
+            Err(err) => ipc_error(4200, format!("SignTransaction failed: {err}")),
         }
     }
 }

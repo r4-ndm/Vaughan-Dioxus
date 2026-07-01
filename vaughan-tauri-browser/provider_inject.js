@@ -214,6 +214,63 @@
       });
     })();
 
+    (function installTrustedLinkInterceptor() {
+      if (window.__VAUGHAN_LINK_INTERCEPT__) return;
+      window.__VAUGHAN_LINK_INTERCEPT__ = true;
+
+      function trustedDispatch(url) {
+        var inv = getInvoke();
+        if (!inv) return false;
+        try {
+          inv("navigate_trusted_dapp", { url: url }).catch(function () {});
+          return true;
+        } catch (e) {
+          return false;
+        }
+      }
+
+      document.addEventListener(
+        "click",
+        function (e) {
+          try {
+            if (e.defaultPrevented) return;
+            if (e.button !== 0) return;
+            if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+            var t = e.target;
+            while (t && t.nodeType === 1 && t.tagName !== "A") {
+              t = t.parentNode;
+            }
+            if (!t || t.tagName !== "A") return;
+            var href = t.href;
+            if (!href || href.indexOf("javascript:") === 0) return;
+            if (!isTrustedWalletPageOrigin(href)) return;
+            var tgt = (t.target || "").toLowerCase();
+            if (tgt && tgt !== "_self") {
+              if (trustedDispatch(href)) {
+                e.preventDefault();
+                e.stopPropagation();
+              }
+            }
+          } catch (_) {}
+        },
+        true
+      );
+
+      try {
+        var origOpen = window.open;
+        window.open = function (url, target, features) {
+          try {
+            if (typeof url === "string" && url && isTrustedWalletPageOrigin(url)) {
+              if (trustedDispatch(url)) {
+                return null;
+              }
+            }
+          } catch (_) {}
+          return origOpen.apply(this, arguments);
+        };
+      } catch (_) {}
+    })();
+
   function makeEthRpcError(code, message, data) {
     var err = new Error(message);
     err.code = code;

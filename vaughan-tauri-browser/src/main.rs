@@ -1,4 +1,4 @@
-//! Vaughan dApp browser — Tauri entry point (stub).
+//! Vaughan dApp browser — Tauri entry point.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 

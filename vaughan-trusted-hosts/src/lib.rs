@@ -35,6 +35,8 @@ pub const ALLOWED_HTTPS_HOST_SUFFIXES: &[&str] = &[
     "asterdex.com",
 ];
 
+use url::Url;
+
 /// True if `host` is `localhost` / `127.0.0.1` or matches an allowlisted HTTPS suffix.
 pub fn hostname_is_whitelisted(host: &str) -> bool {
     let h = host.trim().trim_end_matches('.').to_lowercase();
@@ -47,6 +49,45 @@ pub fn hostname_is_whitelisted(host: &str) -> bool {
         }
     }
     false
+}
+
+/// Validate a URL for trusted dApp navigation (wallet + Tauri browser parity).
+///
+/// Allows **https** on allowlisted hosts, or **http** on localhost / 127.0.0.1 only.
+pub fn validate_navigation_url(url_str: &str) -> Result<String, String> {
+    let u = Url::parse(url_str.trim()).map_err(|e| e.to_string())?;
+    validate_parsed_navigation_url(&u)?;
+    Ok(u.to_string())
+}
+
+/// Parse and validate a navigation URL, returning the parsed [`Url`].
+pub fn parse_navigation_url(url_str: &str) -> Result<Url, String> {
+    let u = Url::parse(url_str.trim()).map_err(|e| e.to_string())?;
+    validate_parsed_navigation_url(&u)?;
+    Ok(u)
+}
+
+fn validate_parsed_navigation_url(u: &Url) -> Result<(), String> {
+    let host = u.host_str().ok_or("URL missing host")?;
+    let h = host.trim().to_lowercase();
+
+    match u.scheme() {
+        "https" => {
+            if !hostname_is_whitelisted(host) {
+                return Err("That site is not on the trusted dApp list".into());
+            }
+        }
+        "http" => {
+            if h != "localhost" && h != "127.0.0.1" {
+                return Err(
+                    "Only https:// dApps are allowed (except http://localhost and http://127.0.0.1)."
+                        .into(),
+                );
+            }
+        }
+        _ => return Err("Invalid URL scheme for a trusted dApp.".into()),
+    }
+    Ok(())
 }
 
 #[cfg(test)]

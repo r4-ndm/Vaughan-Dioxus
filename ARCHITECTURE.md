@@ -60,7 +60,7 @@ The wallet and dApp browser are separate processes: the Dioxus wallet holds keys
 
 - **Theme and components**
   - `theme.rs`: CSS-variable-based dark theme and shared styling.
-  - `components`: Reusable UI widgets (`AddressDisplay`, `BalanceDisplay`, `TxStatusBadge`, `NetworkSelector`).
+  - `components`: Reusable UI widgets (`AddressDisplay`, `TxStatusBadge`, `NetworkSelector`).
 
 - **Views**
   - `onboarding`: First-launch master wallet (password + recovery phrase) or restore; aligns with Vaughan-Tauri keychain + HD model.
