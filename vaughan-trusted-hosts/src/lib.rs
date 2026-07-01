@@ -35,7 +35,49 @@ pub const ALLOWED_HTTPS_HOST_SUFFIXES: &[&str] = &[
     "asterdex.com",
 ];
 
+use std::collections::HashSet;
+use std::sync::{OnceLock, RwLock};
 use url::Url;
+
+static CUSTOM_ALLOWED_HOSTS: OnceLock<RwLock<HashSet<String>>> = OnceLock::new();
+
+/// Add a host dynamically to the dynamic allowed hosts registry.
+pub fn add_custom_allowed_host(host: String) {
+    let lock = CUSTOM_ALLOWED_HOSTS.get_or_init(|| RwLock::new(HashSet::new()));
+    if let Ok(mut write_guard) = lock.write() {
+        write_guard.insert(host.trim().to_lowercase());
+    }
+}
+
+/// Remove a host dynamically from the dynamic allowed hosts registry.
+pub fn remove_custom_allowed_host(host: &str) {
+    let lock = CUSTOM_ALLOWED_HOSTS.get_or_init(|| RwLock::new(HashSet::new()));
+    if let Ok(mut write_guard) = lock.write() {
+        write_guard.remove(&host.trim().to_lowercase());
+    }
+}
+
+
+/// Reset the entire set of dynamically whitelisted hostnames.
+pub fn reset_custom_allowed_hosts(hosts: Vec<String>) {
+    let lock = CUSTOM_ALLOWED_HOSTS.get_or_init(|| RwLock::new(HashSet::new()));
+    if let Ok(mut write_guard) = lock.write() {
+        write_guard.clear();
+        for h in hosts {
+            write_guard.insert(h.trim().to_lowercase());
+        }
+    }
+}
+
+/// Retrieve the current set of dynamically whitelisted hostnames.
+pub fn get_custom_allowed_hosts() -> HashSet<String> {
+    let lock = CUSTOM_ALLOWED_HOSTS.get_or_init(|| RwLock::new(HashSet::new()));
+    if let Ok(read_guard) = lock.read() {
+        read_guard.clone()
+    } else {
+        HashSet::new()
+    }
+}
 
 /// True if `host` is `localhost` / `127.0.0.1` or matches an allowlisted HTTPS suffix.
 pub fn hostname_is_whitelisted(host: &str) -> bool {
@@ -44,6 +86,13 @@ pub fn hostname_is_whitelisted(host: &str) -> bool {
         return true;
     }
     for suffix in ALLOWED_HTTPS_HOST_SUFFIXES {
+        if h == *suffix || h.ends_with(&format!(".{suffix}")) {
+            return true;
+        }
+    }
+    // Check dynamic whitelisted hosts as well.
+    let custom = get_custom_allowed_hosts();
+    for suffix in &custom {
         if h == *suffix || h.ends_with(&format!(".{suffix}")) {
             return true;
         }
@@ -94,21 +143,9 @@ fn validate_parsed_navigation_url(u: &Url) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    const PROVIDER_JS: &str = include_str!("../../vaughan-tauri-browser/provider_inject.js");
     const INDEX_HTML: &str = include_str!("../../vaughan-tauri-browser/index.html");
     const CAP_DEFAULT_JSON: &str =
         include_str!("../../vaughan-tauri-browser/capabilities/default.json");
-
-    #[test]
-    fn rust_allowlist_entries_appear_in_provider_inject_js() {
-        for s in ALLOWED_HTTPS_HOST_SUFFIXES {
-            let needle = format!("\"{s}\"");
-            assert!(
-                PROVIDER_JS.contains(&needle),
-                "provider_inject.js must list {needle:?} (keep in sync with vaughan-trusted-hosts)"
-            );
-        }
-    }
 
     #[test]
     fn rust_allowlist_entries_appear_in_index_html() {

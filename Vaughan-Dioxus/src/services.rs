@@ -34,16 +34,28 @@ impl AppServices {
                     "Failed to initialise OS keychain (gnome-keyring / KWallet / Keychain): {e}"
                 ))
             })?;
-        Ok(Self {
+        let res = Self {
             wallet_state: Arc::new(WalletState::new()),
             network_service: Arc::new(NetworkService::new()),
             history_service: Arc::new(HistoryService::new(std::time::Duration::from_secs(10))),
-            persistence,
+            persistence: persistence.clone(),
             account_manager: Arc::new(account_manager),
             token_manager: Arc::new(TokenManager::new()),
             password_attempt_limiter: Arc::new(AuthRateLimiter::new()),
             session_password: Arc::new(RwLock::new(None)),
-        })
+        };
+
+        // Initialize the custom trusted hosts registry in vaughan-trusted-hosts
+        let snapshot = persistence.snapshot();
+        for d in &snapshot.custom_trusted_dapps {
+            if let Ok(parsed) = url::Url::parse(&d.url) {
+                if let Some(host) = parsed.host_str() {
+                    vaughan_trusted_hosts::add_custom_allowed_host(host.to_lowercase());
+                }
+            }
+        }
+
+        Ok(res)
     }
 
     pub async fn set_session_password(&self, password: String) {

@@ -25,43 +25,17 @@
 //! **F5** (Linux/Windows) or **Super+R** (macOS) as the reload accelerator, and falls back to
 //! `location.reload()` if the native webview reload fails (e.g. after a renderer glitch).
 
-mod ipc;
-mod ipc_pool;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use std::io::Write;
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
 
-use ipc_pool::WalletIpcPool;
+
 use serde::Deserialize;
 use tauri::webview::NewWindowResponse;
-use tauri::webview::PageLoadEvent;
+
 use tauri::Manager;
 use tauri::Url;
 use tauri::WebviewUrl;
 use tauri::WebviewWindow;
-
-use vaughan_ipc_types::{IpcRequest, IpcResponse};
-
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
-fn emit_wallet_event(event: &str, data: serde_json::Value) {
-    let payload = serde_json::json!({
-        "event": event,
-        "data": data,
-        "ts_ms": now_ms(),
-    });
-    let mut out = std::io::stdout().lock();
-    let _ = writeln!(out, "{payload}");
-    let _ = out.flush();
-}
 
 /// Prevents overlapping `navigate_main_trusted_app` calls from nested `on_new_window` bursts.
 static ON_NEWWIN_NAV_BUSY: AtomicBool = AtomicBool::new(false);
@@ -86,175 +60,21 @@ fn hard_reload_main_webview(w: &WebviewWindow) {
     }
 }
 
-fn warmup_status_bar_script(remaining_secs: u64) -> String {
-    const TOTAL_SECS: u64 = 150;
-    let initial_remaining = remaining_secs.min(TOTAL_SECS);
-    let mode = if initial_remaining > 0 {
-        "warming"
-    } else {
-        "ready"
-    };
-    format!(
-        r#"(function(){{
-  if (window.__VAUGHAN_WARMUP_BAR_INIT__) return;
-  window.__VAUGHAN_WARMUP_BAR_INIT__ = true;
-  var MODE = {mode:?};
-  var REM = {initial_remaining};
-  var TOTAL = {TOTAL_SECS};
-  var ROOT_ID = 'vaughan-warmup-root';
-  var FILL_ID = 'vaughan-warmup-fill';
-  var LABEL_ID = 'vaughan-warmup-label';
-  var READY_TEXT = 'Rocket warmup ready - fastest launch state';
-  function ensure() {{
-    var root = document.getElementById(ROOT_ID);
-    if (!root) {{
-      root = document.createElement('div');
-      root.id = ROOT_ID;
-      root.style.position = 'fixed';
-      root.style.left = '0';
-      root.style.right = '0';
-      root.style.top = '0';
-      root.style.zIndex = '2147483647';
-      root.style.padding = '6px 10px 8px 10px';
-      root.style.background = 'rgba(18,20,24,0.96)';
-      root.style.borderBottom = '1px solid rgba(255,255,255,0.12)';
-      root.style.pointerEvents = 'none';
 
-      var label = document.createElement('div');
-      label.id = LABEL_ID;
-      label.style.font = '700 13px/1.25 system-ui,-apple-system,Segoe UI,Roboto,sans-serif';
-      label.style.marginBottom = '6px';
-      label.style.textAlign = 'center';
-
-      var track = document.createElement('div');
-      track.style.height = '10px';
-      track.style.borderRadius = '999px';
-      track.style.background = 'rgba(255,255,255,0.14)';
-      track.style.overflow = 'hidden';
-
-      var fill = document.createElement('div');
-      fill.id = FILL_ID;
-      fill.style.height = '100%';
-      fill.style.width = '0%';
-      fill.style.borderRadius = '999px';
-      fill.style.transition = 'width 0.6s ease';
-      fill.style.backgroundSize = '24px 24px';
-      fill.style.backgroundImage =
-        'linear-gradient(45deg, rgba(255,255,255,0.22) 25%, transparent 25%, transparent 50%, rgba(255,255,255,0.22) 50%, rgba(255,255,255,0.22) 75%, transparent 75%, transparent)';
-      fill.style.animation = 'vaughanWarmupStripe 1s linear infinite';
-
-      track.appendChild(fill);
-      root.appendChild(label);
-      root.appendChild(track);
-      document.documentElement.appendChild(root);
-
-      var style = document.createElement('style');
-      style.textContent = '@keyframes vaughanWarmupStripe{{from{{background-position:0 0;}}to{{background-position:24px 0;}}}}';
-      document.documentElement.appendChild(style);
-      var body = document.body;
-      if (body && !body.dataset.vaughanWarmupPad) {{
-        body.dataset.vaughanWarmupPad = '1';
-        body.style.paddingTop = '44px';
-      }}
-    }}
-    var fill = document.getElementById(FILL_ID);
-    var label = document.getElementById(LABEL_ID);
-    if (!fill || !label) return;
-    if (MODE === 'warming') {{
-      var left = Math.max(0, REM);
-      var pct = Math.round(((TOTAL - left) / TOTAL) * 100);
-      fill.style.width = pct + '%';
-      fill.style.backgroundColor = '#d58b00';
-      label.style.color = '#ffe8b0';
-      label.textContent = 'Rocket warmup ' + pct + '%  (~' + left + 's left)';
-      if (left > 0) REM = left - 1;
-      if (left <= 0) MODE = 'ready';
-    }} else {{
-      fill.style.width = '100%';
-      fill.style.backgroundColor = '#0fa15f';
-      fill.style.backgroundImage = 'none';
-      fill.style.animation = 'none';
-      label.style.color = '#c8ffd9';
-      label.textContent = READY_TEXT;
-    }}
-  }}
-  ensure();
-  setInterval(ensure, 1000);
-}})();"#,
-    )
-}
 
 /// Cap wallet control lines so a bug or broken pipe cannot grow unbounded in memory.
 const MAX_WALLET_STDIN_LINE_BYTES: usize = 8192;
-const WARM_SLOT_MVP_CAP: u8 = 6;
-const PROVIDER_INIT_SCRIPT: &str = include_str!("../provider_inject.js");
 
-/// Same `eval` fallback as the main webview, installed on warm-slot `PageLoadEvent::Finished`.
-static WARM_SLOT_PROVIDER_FALLBACK: OnceLock<Option<Arc<String>>> = OnceLock::new();
-static WARM_SLOT_PING_FAIL_STREAK: OnceLock<Mutex<HashMap<u8, u8>>> = OnceLock::new();
-
-fn warm_slot_ping_streaks() -> &'static Mutex<HashMap<u8, u8>> {
-    WARM_SLOT_PING_FAIL_STREAK.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn warm_slot_reset_ping_streak(slot_id: u8) {
-    if let Ok(mut m) = warm_slot_ping_streaks().lock() {
-        m.insert(slot_id, 0);
-    }
-}
-
-fn warm_slot_remove_ping_streak(slot_id: u8) -> bool {
-    if let Ok(mut m) = warm_slot_ping_streaks().lock() {
-        return m.remove(&slot_id).is_some();
-    }
-    false
-}
-
-fn warm_slot_next_ping_streak(slot_id: u8) -> u8 {
-    if let Ok(mut m) = warm_slot_ping_streaks().lock() {
-        let prev = *m.get(&slot_id).unwrap_or(&0);
-        let next = prev.saturating_add(1);
-        m.insert(slot_id, next);
-        return next;
-    }
-    1
-}
-
-fn warm_slot_tracked_ids() -> Vec<u8> {
-    warm_slot_ping_streaks()
-        .lock()
-        .ok()
-        .map(|m| m.keys().copied().collect())
-        .unwrap_or_default()
-}
 
 fn default_reveal_true() -> bool {
     true
 }
 
 #[derive(Debug, Deserialize)]
-struct WalletWarmSlotById {
-    slot_id: u8,
-}
-
-#[derive(Debug, Deserialize)]
-struct WalletWarmSlotNavigateHidden {
-    slot_id: u8,
-    url: String,
-}
-
-#[derive(Debug, Deserialize)]
 struct WalletStdinControl {
-    cmd: Option<String>,
-    id: Option<u8>,
-    url: Option<String>,
     navigate_trusted: Option<String>,
     #[serde(default = "default_reveal_true")]
     reveal: bool,
-    warm_slot_navigate_hidden: Option<WalletWarmSlotNavigateHidden>,
-    warm_slot_show: Option<WalletWarmSlotById>,
-    warm_slot_hide: Option<WalletWarmSlotById>,
-    warm_slot_destroy: Option<WalletWarmSlotById>,
 }
 
 /// Read until `\n`, EOF, or `max` content bytes (newline not counted). On overflow, discards through the
@@ -327,178 +147,37 @@ fn navigate_main_trusted_app(
     navigate_main_trusted_url(app, u, reveal)
 }
 
-fn warm_slot_label(slot_id: u8) -> Option<String> {
-    if slot_id < WARM_SLOT_MVP_CAP {
-        Some(format!("warm-slot-{slot_id}"))
-    } else {
-        None
-    }
-}
 
-fn ensure_warm_slot_window(
-    app: &tauri::AppHandle,
-    slot_id: u8,
-) -> Result<tauri::WebviewWindow, String> {
-    let label = warm_slot_label(slot_id).ok_or_else(|| "invalid warm slot id".to_string())?;
-    if let Some(w) = app.get_webview_window(&label) {
-        return Ok(w);
-    }
-    let fallback = WARM_SLOT_PROVIDER_FALLBACK
-        .get()
-        .cloned()
-        .unwrap_or(None);
-    let slot_for_cb = slot_id;
-    let mut wvb = tauri::WebviewWindowBuilder::new(
-        app,
-        label.clone(),
-        WebviewUrl::App("index.html".into()),
-    )
-    .title("Vaughan - dApp Warm Slot")
-    .inner_size(1200.0, 800.0)
-    .resizable(true)
-    .visible(false)
-    .initialization_script_for_all_frames(PROVIDER_INIT_SCRIPT);
-    if let Some(fallback_js) = fallback {
-        let fb = Arc::clone(&fallback_js);
-        wvb = wvb.on_page_load(move |window, payload| {
-            if payload.event() != PageLoadEvent::Finished {
-                return;
-            }
-            let url_owned = payload.url().to_string();
-            match payload.url().scheme() {
-                "about" | "data" | "blob" => return,
-                _ => {}
-            }
-            if url_owned.starts_with("tauri://") || url_owned.starts_with("asset://") {
-                return;
-            }
-            let invited = match payload.url().scheme() {
-                "https" => parse_allowlisted_navigation_url(&url_owned).is_ok(),
-                "http" => {
-                    let host = payload.url().host_str().unwrap_or("").to_lowercase();
-                    host == "localhost" || host == "127.0.0.1"
-                }
-                _ => false,
-            };
-            if invited {
-                let _ = window.eval(fb.as_str());
-            }
-            emit_wallet_event(
-                "slot_loaded",
-                serde_json::json!({
-                    "slot_id": slot_for_cb,
-                    "url": url_owned,
-                    "success": invited,
-                }),
-            );
-        });
-    }
-    wvb.build().map_err(|e| e.to_string())
-}
-
-fn warm_slot_navigate_hidden(
-    app: &tauri::AppHandle,
-    slot_id: u8,
-    url: String,
-) -> Result<(), String> {
-    let u = parse_allowlisted_navigation_url(&url)?;
-    let w = ensure_warm_slot_window(app, slot_id)?;
-    w.navigate(u).map_err(|e| e.to_string())?;
-    let _ = w.hide();
-    warm_slot_reset_ping_streak(slot_id);
-    Ok(())
-}
-
-fn warm_slot_show(app: &tauri::AppHandle, slot_id: u8) -> Result<(), String> {
-    let label = warm_slot_label(slot_id).ok_or_else(|| "invalid warm slot id".to_string())?;
-    let w = app
-        .get_webview_window(&label)
-        .ok_or_else(|| "warm slot window missing".to_string())?;
-    let _ = w.show();
-    let _ = w.set_focus();
-    warm_slot_reset_ping_streak(slot_id);
-    emit_wallet_event("slot_claimed", serde_json::json!({ "slot_id": slot_id }));
-    Ok(())
-}
-
-fn warm_slot_hide(app: &tauri::AppHandle, slot_id: u8) -> Result<(), String> {
-    let label = warm_slot_label(slot_id).ok_or_else(|| "invalid warm slot id".to_string())?;
-    let had_window = if let Some(w) = app.get_webview_window(&label) {
-        let _ = w.hide();
-        true
-    } else {
-        false
-    };
-    if had_window {
-        warm_slot_reset_ping_streak(slot_id);
-    }
-    emit_wallet_event("slot_hidden", serde_json::json!({ "slot_id": slot_id }));
-    Ok(())
-}
-
-fn warm_slot_destroy(app: &tauri::AppHandle, slot_id: u8) -> Result<(), String> {
-    let label = warm_slot_label(slot_id).ok_or_else(|| "invalid warm slot id".to_string())?;
-    if let Some(w) = app.get_webview_window(&label) {
-        let _ = w.close();
-    }
-    let _ = warm_slot_remove_ping_streak(slot_id);
-    emit_wallet_event("slot_destroyed", serde_json::json!({ "slot_id": slot_id }));
-    Ok(())
-}
-
-fn warm_slot_health_check(app: &tauri::AppHandle) {
-    let tracked_slots: Vec<u8> = warm_slot_tracked_ids();
-    for slot_id in tracked_slots {
-        let Some(label) = warm_slot_label(slot_id) else {
-            continue;
-        };
-        let Some(w) = app.get_webview_window(&label) else {
-            let was_tracked = warm_slot_remove_ping_streak(slot_id);
-            if was_tracked {
-                emit_wallet_event("slot_crashed", serde_json::json!({ "slot_id": slot_id }));
-            }
-            continue;
-        };
-        let ok = w.eval("1").is_ok();
-        if ok {
-            warm_slot_reset_ping_streak(slot_id);
-            continue;
-        }
-        let streak_now = warm_slot_next_ping_streak(slot_id);
-        if streak_now >= 3 {
-            emit_wallet_event("slot_crashed", serde_json::json!({ "slot_id": slot_id }));
-            let _ = warm_slot_destroy(app, slot_id);
-        }
-    }
-}
 
 #[derive(Debug, Clone)]
 struct CliConfig {
-    ipc_endpoint: String,
-    token: String,
+    rpc_port: Option<u16>,
+    rpc_token: Option<String>,
     initial_url: Option<String>,
 }
 
-static IPC_REQ_ID: AtomicU64 = AtomicU64::new(1);
-
 fn parse_args() -> Option<CliConfig> {
-    let mut ipc = None::<String>;
-    let mut token = None::<String>;
+    let mut rpc_port = None::<u16>;
+    let mut rpc_token = None::<String>;
     let mut initial_url = None::<String>;
 
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         match arg.as_str() {
-            "--ipc" | "--ipc-endpoint" => ipc = it.next(),
-            "--token" => token = it.next(),
+            "--rpc-port" => {
+                if let Some(s) = it.next() {
+                    rpc_port = s.parse().ok();
+                }
+            }
+            "--rpc-token" => rpc_token = it.next(),
             "--url" => initial_url = it.next(),
             _ => {}
         }
     }
 
     Some(CliConfig {
-        ipc_endpoint: ipc?,
-        token: token?,
+        rpc_port,
+        rpc_token,
         initial_url,
     })
 }
@@ -558,16 +237,12 @@ fn resolve_main_webview_url(initial: Option<&String>) -> (WebviewUrl, bool) {
 }
 
 pub fn run() {
-    let cli = parse_args();
+    // Load custom trusted hosts from state.json
+    for host in load_custom_hosts_from_state_json() {
+        vaughan_trusted_hosts::add_custom_allowed_host(host);
+    }
 
-    let ipc_pool = cli.as_ref().map(|c| {
-        WalletIpcPool::new(
-            c.ipc_endpoint.clone(),
-            c.token.clone(),
-            Duration::from_secs(3),
-        )
-    });
-    let ipc_pool_for_warm = ipc_pool.clone();
+    let cli = parse_args();
 
     let navigate_after_load = cli
         .as_ref()
@@ -579,34 +254,12 @@ pub fn run() {
     let wallet_spawned = std::env::var("VAUGHAN_WALLET_SPAWNED")
         .map(|v| v == "1")
         .unwrap_or(false);
-    let wallet_warm_shell = std::env::var("VAUGHAN_WALLET_WARM_SHELL")
-        .map(|v| v == "1")
-        .unwrap_or(false);
-    let warmup_hint_remaining_secs = std::env::var("VAUGHAN_WARMUP_HINT_REMAINING_SECS")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok());
-    let warmup_hint_is_rocket = std::env::var("VAUGHAN_WARMUP_HINT_IS_ROCKET")
-        .map(|v| v == "1")
-        .unwrap_or(false);
-    tracing::info!(
-        target: "vaughan_ipc_browser",
-        remaining_secs = ?warmup_hint_remaining_secs,
-        is_rocket = warmup_hint_is_rocket,
-        "Vaughan warmup hint"
-    );
-    // Keep the OS process alive across window-close only for the wallet's *warm shell* (the
-    // long-lived child that hosts the main webview + hidden warm slots). `_new_window`
-    // children (spawned per TV-on click with `VAUGHAN_WALLET_SPAWNED=1` but without
-    // `VAUGHAN_WALLET_WARM_SHELL=1`) should close cleanly so we don't leak a full WebKit
-    // process every time the user closes a TV-opened dApp window.
-    let intercept_wallet_close = wallet_warm_shell;
     let use_trusted_chrome = external_top_level || wallet_spawned;
 
     tracing::info!(
         target: "vaughan_ipc_browser",
         external_top_level,
         wallet_spawned,
-        warm_shell = wallet_warm_shell,
         "Vaughan dApp browser starting"
     );
 
@@ -622,71 +275,46 @@ pub fn run() {
         })
     };
 
+    let cli_config = cli.clone().unwrap_or(CliConfig {
+        rpc_port: None,
+        rpc_token: None,
+        initial_url: None,
+    });
+
+    let rpc_port_scheme = cli_config.rpc_port.unwrap_or(0);
+    let rpc_token_scheme = cli_config.rpc_token.clone().unwrap_or_default();
+
     tauri::Builder::default()
-        .manage(ipc_pool)
-        .invoke_handler(tauri::generate_handler![ipc_request, navigate_trusted_dapp])
-        .setup(move |app| {
-            let provider_fallback_eval: Option<Arc<String>> = if use_trusted_chrome {
-                let quoted = serde_json::to_string(PROVIDER_INIT_SCRIPT)
-                    .expect("serialize provider script");
-                Some(Arc::new(format!(
-                    "(function(){{if(window.__VAUGHAN_ETH_INJECTED__)return;try{{eval({quoted});}}catch(e){{console.error('[Vaughan] provider fallback eval failed',e);}}}})();"
-                )))
+        .manage(cli_config)
+        .invoke_handler(tauri::generate_handler![ipc_request, navigate_trusted_dapp, update_whitelist])
+        .register_uri_scheme_protocol("vaughan", move |_app, request| {
+            let path = request.uri().path();
+            if path == "/provider" || path == "/provider/" {
+                let html = include_str!("provider.html")
+                    .replace("{{RPC_PORT}}", &rpc_port_scheme.to_string())
+                    .replace("{{RPC_TOKEN}}", &rpc_token_scheme);
+                tauri::http::Response::builder()
+                    .header("Content-Type", "text/html")
+                    .status(200)
+                    .body(html.as_bytes().to_vec())
+                    .unwrap()
             } else {
-                None
-            };
-
-            let _ = WARM_SLOT_PROVIDER_FALLBACK.set(provider_fallback_eval.clone());
-
+                tauri::http::Response::builder()
+                    .status(404)
+                    .body(Vec::new())
+                    .unwrap()
+            }
+        })
+        .setup(move |app| {
             let mut wv = tauri::WebviewWindowBuilder::new(app, "main", webview_url)
                 .title("Vaughan - dApp Browser")
                 .inner_size(1200.0, 800.0)
                 .resizable(true)
-                .initialization_script_for_all_frames(PROVIDER_INIT_SCRIPT);
-
-            if wallet_warm_shell {
-                wv = wv.visible(false);
-            }
-
-            let warmup_bar_eval: Option<Arc<String>> =
-                if wallet_spawned && !wallet_warm_shell && warmup_hint_is_rocket {
-                    warmup_hint_remaining_secs
-                        .map(warmup_status_bar_script)
-                        .map(Arc::new)
-                } else {
-                    None
-                };
-
-            if let Some(fallback_js) = provider_fallback_eval {
-                let warmup_bar_eval = warmup_bar_eval.clone();
-                wv = wv.on_page_load(move |window, payload| {
-                    if payload.event() == PageLoadEvent::Started {
-                        if let Some(ref warm_js) = warmup_bar_eval {
-                            let _ = window.eval(warm_js.as_str());
-                        }
-                        return;
-                    }
-                    if payload.event() != PageLoadEvent::Finished {
-                        return;
-                    }
-                    match payload.url().scheme() {
-                        "about" | "data" | "blob" => return,
-                        _ => {}
-                    }
-                    let _ = window.eval(fallback_js.as_str());
-                    if let Some(ref warm_js) = warmup_bar_eval {
-                        let _ = window.eval(warm_js.as_str());
-                    }
-                });
-            }
+                .devtools(true)
+                .initialization_script_for_all_frames(include_str!("thin-proxy.js"));
 
             if let Some(script) = pending_js.as_ref() {
                 wv = wv.initialization_script(script);
-            }
-            if wallet_spawned && !wallet_warm_shell && warmup_hint_is_rocket {
-                let remaining = warmup_hint_remaining_secs.unwrap_or(90);
-                let warm_script = warmup_status_bar_script(remaining);
-                wv = wv.initialization_script(&warm_script);
             }
 
             #[cfg(desktop)]
@@ -745,15 +373,6 @@ pub fn run() {
                 });
             }
 
-            // Overlap socket connect + handshake with WebKit window creation so the wallet gate
-            // (`dapp_browser_ipc_handshake_seen`) clears sooner on warm start.
-            if let Some(pool) = ipc_pool_for_warm.as_ref() {
-                let p = Arc::clone(pool);
-                tauri::async_runtime::spawn(async move {
-                    p.warm_connections().await;
-                });
-            }
-
             #[cfg(desktop)]
             if use_trusted_chrome {
                 use tauri::menu::{Menu, MenuItemBuilder, Submenu};
@@ -808,26 +427,7 @@ pub fn run() {
             wv.build()
                 .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
-            if wallet_spawned && !wallet_warm_shell && warmup_hint_is_rocket {
-                let warm_script = warmup_status_bar_script(warmup_hint_remaining_secs.unwrap_or(90));
-                let handle = app.handle().clone();
-                std::thread::Builder::new()
-                    .name("vaughan-warmup-bar-retry".into())
-                    .spawn(move || {
-                        // Retry aggressively for early-load races / SPA rewrites.
-                        for _ in 0..12 {
-                            std::thread::sleep(Duration::from_millis(750));
-                            let script = warm_script.clone();
-                            let h2 = handle.clone();
-                            let _ = handle.run_on_main_thread(move || {
-                                if let Some(w) = h2.get_webview_window("main") {
-                                    let _ = w.eval(script.as_str());
-                                }
-                            });
-                        }
-                    })
-                    .ok();
-            }
+
 
             if wallet_spawned {
                 let ctl = app.handle().clone();
@@ -874,131 +474,7 @@ pub fn run() {
                                         );
                                         continue;
                                     };
-                                    if let Some(name) = cmd.cmd.as_deref() {
-                                        match name {
-                                            "create_webview" => {
-                                                let Some(slot_id) = cmd.id else { continue; };
-                                                let app_for_dispatch = ctl.clone();
-                                                let app_in_closure = ctl.clone();
-                                                let _ = app_for_dispatch.run_on_main_thread(move || {
-                                                    if ensure_warm_slot_window(&app_in_closure, slot_id).is_ok() {
-                                                        emit_wallet_event("slot_created", serde_json::json!({ "slot_id": slot_id }));
-                                                    }
-                                                });
-                                                continue;
-                                            }
-                                            "navigate" => {
-                                                let (Some(slot_id), Some(url)) = (cmd.id, cmd.url) else { continue; };
-                                                let app_for_dispatch = ctl.clone();
-                                                let app_in_closure = ctl.clone();
-                                                let _ = app_for_dispatch.run_on_main_thread(move || {
-                                                    let _ = warm_slot_navigate_hidden(&app_in_closure, slot_id, url);
-                                                });
-                                                continue;
-                                            }
-                                            "show" => {
-                                                let Some(slot_id) = cmd.id else { continue; };
-                                                let app_for_dispatch = ctl.clone();
-                                                let app_in_closure = ctl.clone();
-                                                let _ = app_for_dispatch.run_on_main_thread(move || {
-                                                    let _ = warm_slot_show(&app_in_closure, slot_id);
-                                                });
-                                                continue;
-                                            }
-                                            "hide" => {
-                                                let Some(slot_id) = cmd.id else { continue; };
-                                                let app_for_dispatch = ctl.clone();
-                                                let app_in_closure = ctl.clone();
-                                                let _ = app_for_dispatch.run_on_main_thread(move || {
-                                                    let _ = warm_slot_hide(&app_in_closure, slot_id);
-                                                });
-                                                continue;
-                                            }
-                                            "destroy" => {
-                                                let Some(slot_id) = cmd.id else { continue; };
-                                                let app_for_dispatch = ctl.clone();
-                                                let app_in_closure = ctl.clone();
-                                                let _ = app_for_dispatch.run_on_main_thread(move || {
-                                                    let _ = warm_slot_destroy(&app_in_closure, slot_id);
-                                                });
-                                                continue;
-                                            }
-                                            _ => {}
-                                        }
-                                    }
-                                    if let Some(req) = cmd.warm_slot_navigate_hidden {
-                                        let app_for_dispatch = ctl.clone();
-                                        let app_in_closure = ctl.clone();
-                                        if let Err(e) = app_for_dispatch.run_on_main_thread(move || {
-                                            if let Err(e) = warm_slot_navigate_hidden(
-                                                &app_in_closure,
-                                                req.slot_id,
-                                                req.url,
-                                            ) {
-                                                tracing::warn!(
-                                                    target: "vaughan_ipc_browser",
-                                                    err = %e,
-                                                    "warm_slot_navigate_hidden failed"
-                                                );
-                                            }
-                                        }) {
-                                            tracing::warn!(
-                                                target: "vaughan_ipc_browser",
-                                                err = %e,
-                                                "run_on_main_thread failed for warm_slot_navigate_hidden"
-                                            );
-                                        }
-                                        continue;
-                                    }
-                                    if let Some(req) = cmd.warm_slot_show {
-                                        let app_for_dispatch = ctl.clone();
-                                        let app_in_closure = ctl.clone();
-                                        if let Err(e) = app_for_dispatch.run_on_main_thread(move || {
-                                            if let Err(e) = warm_slot_show(&app_in_closure, req.slot_id)
-                                            {
-                                                tracing::warn!(
-                                                    target: "vaughan_ipc_browser",
-                                                    err = %e,
-                                                    "warm_slot_show failed"
-                                                );
-                                            }
-                                        }) {
-                                            tracing::warn!(
-                                                target: "vaughan_ipc_browser",
-                                                err = %e,
-                                                "run_on_main_thread failed for warm_slot_show"
-                                            );
-                                        }
-                                        continue;
-                                    }
-                                    if let Some(req) = cmd.warm_slot_hide {
-                                        let app_for_dispatch = ctl.clone();
-                                        let app_in_closure = ctl.clone();
-                                        if let Err(e) = app_for_dispatch.run_on_main_thread(move || {
-                                            let _ = warm_slot_hide(&app_in_closure, req.slot_id);
-                                        }) {
-                                            tracing::warn!(
-                                                target: "vaughan_ipc_browser",
-                                                err = %e,
-                                                "run_on_main_thread failed for warm_slot_hide"
-                                            );
-                                        }
-                                        continue;
-                                    }
-                                    if let Some(req) = cmd.warm_slot_destroy {
-                                        let app_for_dispatch = ctl.clone();
-                                        let app_in_closure = ctl.clone();
-                                        if let Err(e) = app_for_dispatch.run_on_main_thread(move || {
-                                            let _ = warm_slot_destroy(&app_in_closure, req.slot_id);
-                                        }) {
-                                            tracing::warn!(
-                                                target: "vaughan_ipc_browser",
-                                                err = %e,
-                                                "run_on_main_thread failed for warm_slot_destroy"
-                                            );
-                                        }
-                                        continue;
-                                    }
+
                                     let Some(url) = cmd
                                         .navigate_trusted
                                         .filter(|s| !s.trim().is_empty())
@@ -1059,88 +535,11 @@ pub fn run() {
                     "IPC config missing. Start with --ipc <endpoint> --token <token>"
                 );
             }
-            emit_wallet_event(
-                "ready",
-                serde_json::json!({ "max_webviews": WARM_SLOT_MVP_CAP }),
-            );
-
-            std::thread::Builder::new()
-                .name("vaughan-browser-heartbeat".into())
-                .spawn(|| loop {
-                    std::thread::sleep(Duration::from_secs(5));
-                    emit_wallet_event("heartbeat", serde_json::json!({}));
-                })
-                .ok();
-
-            let app_for_health = app.handle().clone();
-            std::thread::Builder::new()
-                .name("vaughan-warm-slot-health".into())
-                .spawn(move || loop {
-                    std::thread::sleep(Duration::from_secs(3));
-                    let app_dispatch = app_for_health.clone();
-                    let app_inner = app_for_health.clone();
-                    let _ = app_dispatch.run_on_main_thread(move || {
-                        warm_slot_health_check(&app_inner);
-                    });
-                })
-                .ok();
-
             Ok(())
         })
         .build(tauri::generate_context!())
         .expect("error building tauri application")
-        .run(move |app, event| {
-            if let tauri::RunEvent::ExitRequested { ref api, .. } = event {
-                if intercept_wallet_close {
-                    api.prevent_exit();
-                    return;
-                }
-            }
-            // `CloseRequested` is not delivered through `WebviewWindow::on_window_event` on this path;
-            // handle it from `RunEvent` so `prevent_close()` runs before Wry decides to tear the window down.
-            // Defer `hide()` to the next main-loop turn: calling GTK hide synchronously inside the close
-            // handler has caused heap corruption on Linux (glibc "corrupted double-linked list").
-            if let tauri::RunEvent::WindowEvent { label, event, .. } = event {
-                // `window.ethereum` is intentionally not exposed (EIP-6963 only) —
-                // use the non-enumerable backreference set by `provider_inject.js`.
-                const DISCONNECT_ETH: &str = "try{var p=window.__vaughanEthereum;if(p&&typeof p.disconnect==='function'){var d=p.disconnect();if(d&&typeof d.then==='function')d.catch(function(){});}}catch(e){}";
-
-                if label == "main" {
-                    if !intercept_wallet_close {
-                        return;
-                    }
-                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                        api.prevent_close();
-                        let handle = app.clone();
-                        let _ = app.run_on_main_thread(move || {
-                            if let Some(w) = handle.get_webview_window("main") {
-                                let _ = w.eval(DISCONNECT_ETH);
-                                let _ = w.hide();
-                            }
-                        });
-                    }
-                    return;
-                }
-
-                // Rocket warm-slot windows: hide instead of destroy so the parent can refill the slot.
-                if let Some(slot_id) = label
-                    .strip_prefix("warm-slot-")
-                    .and_then(|s| s.parse::<u8>().ok())
-                {
-                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                        api.prevent_close();
-                        let handle = app.clone();
-                        let slot_label = label.to_string();
-                        let _ = app.run_on_main_thread(move || {
-                            if let Some(w) = handle.get_webview_window(&slot_label) {
-                                let _ = w.eval(DISCONNECT_ETH);
-                            }
-                            let _ = warm_slot_hide(&handle, slot_id);
-                        });
-                    }
-                }
-            }
-        });
+        .run(move |_app, _event| {});
 }
 
 /// Navigates the **main** webview to `url` only if it passes [`parse_allowlisted_navigation_url`].
@@ -1150,20 +549,99 @@ fn navigate_trusted_dapp(app: tauri::AppHandle, url: String) -> Result<(), Strin
     navigate_main_trusted_app(&app, url, true)
 }
 
-/// Forwards to the wallet over a pooled local socket (K persistent connections by default).
+#[tauri::command]
+fn update_whitelist(app: tauri::AppHandle, hosts: Vec<String>) {
+    vaughan_trusted_hosts::reset_custom_allowed_hosts(hosts.clone());
+
+    // Broadcast the updated whitelist array to all active Wry webviews/frames
+    let custom_hosts_json = serde_json::to_string(&hosts).unwrap_or_else(|_| "[]".to_string());
+    let eval_js = format!("window.__VAUGHAN_CUSTOM_TRUSTED_HOSTS = {};", custom_hosts_json);
+    for (_, win) in app.webview_windows() {
+        let _ = win.eval(&eval_js);
+    }
+}
+
 #[tauri::command]
 async fn ipc_request(
-    pool: tauri::State<'_, Option<Arc<WalletIpcPool>>>,
-    request: IpcRequest,
-) -> Result<IpcResponse, String> {
-    let Some(pool) = pool.as_ref() else {
-        return Err("Wallet IPC not configured".to_string());
+    _app: tauri::AppHandle,
+    cli: tauri::State<'_, CliConfig>,
+    request: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let req_type = request.get("type")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "Missing request type".to_string())?;
+        
+    let req_payload = request.get("payload")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+
+    let method = match req_type {
+        "GetNetworkInfo" => "vaughan_getNetworkInfo",
+        "GetAccounts" => "vaughan_getAccounts",
+        "SignTransaction" => "vaughan_signTransaction",
+        "SignMessage" => "vaughan_signMessage",
+        "AddTrustedHost" => "vaughan_addTrustedHost",
+        "RemoveTrustedHost" => "vaughan_removeTrustedHost",
+        "GetTrustedHosts" => "vaughan_getTrustedHosts",
+        other => return Err(format!("Unknown legacy request type: {}", other)),
     };
 
-    let op_timeout = Duration::from_secs(10);
-    let id = IPC_REQ_ID.fetch_add(1, Ordering::Relaxed);
-    let env = pool.request(id, request, op_timeout).await?;
-    Ok(env.body)
+    let json_rpc_body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": method,
+        "params": req_payload,
+        "id": 1
+    });
+
+    let port = cli.rpc_port.unwrap_or(0);
+    let token = cli.rpc_token.as_deref().unwrap_or("");
+    if port == 0 {
+        return Err("RPC port not configured".to_string());
+    }
+
+    let client = reqwest::Client::new();
+    let url = format!("http://127.0.0.1:{}/rpc", port);
+
+    let res = client.post(&url)
+        .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {}", token))
+        .json(&json_rpc_body)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !res.status().is_success() {
+        return Err(format!("HTTP error status: {}", res.status()));
+    }
+
+    let json_res: serde_json::Value = res.json()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if let Some(err) = json_res.get("error") {
+        return Err(err.get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("JSON-RPC error")
+            .to_string());
+    }
+
+    let result = json_res.get("result")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+
+    let response_type = match req_type {
+        "GetNetworkInfo" => "NetworkInfo",
+        "GetAccounts" => "Accounts",
+        "SignTransaction" => "SignedTransaction",
+        "SignMessage" => "SignedMessage",
+        "AddTrustedHost" | "RemoveTrustedHost" | "GetTrustedHosts" => "CustomHosts",
+        other => other,
+    };
+
+    Ok(serde_json::json!({
+        "type": response_type,
+        "payload": result
+    }))
 }
 
 #[cfg(test)]
@@ -1228,3 +706,34 @@ mod topnav_url_tests {
         assert!(parse_allowlisted_navigation_url("http://127.0.0.1:3000/").is_ok());
     }
 }
+
+fn load_custom_hosts_from_state_json() -> Vec<String> {
+    let base = dirs::data_dir()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
+    let path = base.join("vaughan-dioxus").join("state.json");
+    if !path.exists() {
+        return Vec::new();
+    }
+    let Ok(bytes) = std::fs::read(path) else {
+        return Vec::new();
+    };
+    let Ok(val) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return Vec::new();
+    };
+    let Some(custom_list) = val.get("custom_trusted_dapps").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    let mut hosts = Vec::new();
+    for item in custom_list {
+        if let Some(url_str) = item.get("url").and_then(|v| v.as_str()) {
+            if let Ok(parsed) = url::Url::parse(url_str) {
+                if let Some(host) = parsed.host_str() {
+                    hosts.push(host.to_lowercase());
+                }
+            }
+        }
+    }
+    hosts
+}
+
+

@@ -11,7 +11,8 @@ mod services;
 mod theme;
 mod utils;
 mod views;
-mod wallet_ipc;
+mod wallet_rpc_server;
+
 
 /// Match Vaughan-Tauri main window (`src-tauri/src/lib.rs`): 80% monitor height, width = height/φ, centered.
 #[cfg(not(feature = "mobile"))]

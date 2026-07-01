@@ -100,6 +100,12 @@ impl PersistenceHandle {
     }
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CustomDapp {
+    pub name: String,
+    pub url: String,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PersistedState {
     pub version: u32,
@@ -112,7 +118,10 @@ pub struct PersistedState {
     #[serde(default)]
     pub active_network_id: Option<String>,
     pub preferences: Option<UserPreferences>,
+    #[serde(default)]
+    pub custom_trusted_dapps: Vec<CustomDapp>,
 }
+
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UserPreferences {
@@ -342,6 +351,11 @@ fn migrate_persisted_state_from_json(
         .get("preferences")
         .and_then(|p| serde_json::from_value::<UserPreferences>(p.clone()).ok());
 
+    let custom_trusted_dapps: Vec<CustomDapp> = value
+        .get("custom_trusted_dapps")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+
     Ok(PersistedState {
         version: version.max(1),
         accounts,
@@ -349,6 +363,7 @@ fn migrate_persisted_state_from_json(
         networks,
         active_network_id,
         preferences,
+        custom_trusted_dapps,
     })
 }
 

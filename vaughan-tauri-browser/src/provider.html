@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Vaughan Provider</title>
+</head>
+<body>
+<script>
+  // These placeholders are replaced by the Rust backend when serving the file
+  const RPC_PORT = '{{RPC_PORT}}';
+  const RPC_TOKEN = '{{RPC_TOKEN}}';
+
+  let accounts = [];
+  let chainId = '0x1';
+  let connected = false;
+
+  async function rpc(method, params = null) {
+    const res = await fetch(`http://127.0.0.1:${RPC_PORT}/rpc`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${RPC_TOKEN}`
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', method, params, id: Date.now() })
+    });
+    if (!res.ok) {
+      const err = new Error(`Wallet unavailable (${res.status})`);
+      err.code = -32603;
+      throw err;
+    }
+    const json = await res.json();
+    if (json.error) {
+      const err = new Error(json.error.message || 'RPC error');
+      err.code = json.error.code || -32603;
+      throw err;
+    }
+    return json.result;
+  }
+
+  function hexQtyToDec(val) {
+    if (!val || typeof val !== "string" || !val.startsWith("0x")) return null;
+    return BigInt(val).toString();
+  }
+
+  const handlers = {
+    async eth_requestAccounts() {
+      const result = await rpc('vaughan_getAccounts');
+      const newAccounts = (result || []).map(a => (a && typeof a === 'object') ? a.address : a).filter(Boolean);
+      const changed = JSON.stringify(accounts) !== JSON.stringify(newAccounts);
+      accounts = newAccounts;
+      if (!connected) {
+        connected = true;
+        emit('connect', { chainId });
+      }
+      if (changed) {
+        emit('accountsChanged', accounts);
+      }
+      return accounts;
+    },
+
+    async eth_accounts() {
+      return accounts;
+    },
+
+    async eth_chainId() {
+      return chainId;
+    },
+
+    async eth_sendTransaction(params) {
+      const tx = (params && params[0]) || {};
+      const payload = {
+        from: tx.from || accounts[0] || null,
+        to: tx.to || null,
+        value: hexQtyToDec(tx.value || "0x0"),
+        data: tx.data || null,
+        nonce: hexQtyToDec(tx.nonce),
+        gas_limit: hexQtyToDec(tx.gas || tx.gasLimit),
+        gas_price: hexQtyToDec(tx.gasPrice),
+        max_fee_per_gas: hexQtyToDec(tx.maxFeePerGas),
+        max_priority_fee_per_gas: hexQtyToDec(tx.maxPriorityFeePerGas),
+        chain_id: chainId ? Number(BigInt(chainId).toString()) : null,
+      };
+      return rpc('vaughan_signTransaction', payload);
+    },
+
+    async eth_sign(params) {
+      const address = params && params[0];
+      const message = params && params[1];
+      const chain_id = chainId ? Number(BigInt(chainId).toString()) : null;
+      return rpc('vaughan_signMessage', { address, message, chain_id });
+    },
+
+    async personal_sign(params) {
+      const message = params && params[0];
+      const address = params && params[1];
+      const chain_id = chainId ? Number(BigInt(chainId).toString()) : null;
+      return rpc('vaughan_signMessage', { address, message: String(message), chain_id });
+    },
+
+    async eth_signTypedData_v4(params) {
+      const address = params && params[0];
+      const typedData = params && params[1];
+      const chain_id = chainId ? Number(BigInt(chainId).toString()) : null;
+      const typed_data_json = typeof typedData === "string" ? typedData : JSON.stringify(typedData);
+      return rpc('vaughan_signMessage', { address, typed_data_json, chain_id, is_typed_data: true });
+    },
+
+    async default(method, params) {
+      return rpc('vaughan_rpcForward', { method, params });
+    }
+  };
+
+  function emit(event, payload) {
+    if (!eSource) return;
+    eSource.postMessage({ type: 'VAUGHAN_EVENT', event, payload }, eOrigin);
+  }
+
+  let eSource = null;
+  let eOrigin = '*';
+
+  window.addEventListener('message', async (e) => {
+    if (e.data.type !== 'VAUGHAN_REQUEST' && e.data.type !== 'VAUGHAN_ON') return;
+    
+    // Store source to reply to the correct dApp proxy
+    if (!eSource && e.source) {
+      eSource = e.source;
+      eOrigin = '*';
+    }
+
+    if (e.data.type === 'VAUGHAN_ON') return;
+
+    const { id, method, params } = e.data;
+
+    try {
+      const result = handlers[method]
+        ? await handlers[method](params)
+        : await handlers.default(method, params);
+      e.source.postMessage({ type: 'VAUGHAN_RESPONSE', id, result }, eOrigin);
+    } catch (err) {
+      const errObj = {
+        message: err.message || String(err),
+        code: err.code || -32603
+      };
+      e.source.postMessage({ type: 'VAUGHAN_RESPONSE', id, error: errObj }, eOrigin);
+    }
+  });
+
+  // Periodically poll selected chain config
+  setInterval(async () => {
+    try {
+      const info = await rpc('vaughan_getNetworkInfo');
+      if (info && info.chain_id) {
+          const hexChain = '0x' + Number(info.chain_id).toString(16);
+          if (hexChain !== chainId) {
+            chainId = hexChain;
+            emit('chainChanged', chainId);
+          }
+      }
+    } catch(e) {}
+  }, 5000);
+</script>
+</body>
+</html>

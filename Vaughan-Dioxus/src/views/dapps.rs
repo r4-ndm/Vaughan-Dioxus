@@ -14,7 +14,7 @@ use crate::app::AppRuntime;
 use crate::pulsex_local;
 use crate::browser::{
     self, format_user_dapp_url, google_favicon_url_for_dapp, trusted_dapp_visible_on_chain,
-    validate_whitelisted_dapp_url, TrustedDapp, TRUSTED_DAPP_ENTRIES,
+    TrustedDapp, TRUSTED_DAPP_ENTRIES,
 };
 use crate::chain_bootstrap::refresh_evm_adapter_for_active_network;
 use crate::components::{AccountOption, AccountSelector, NetworkOption, NetworkSelector};
@@ -25,22 +25,10 @@ use crate::wallet_selectors::{set_active_account_and_refresh, spawn_wallet_selec
 /// Curated entry for loopback PulseX (`browser.rs`); controls use the same URL key.
 const PULSEX_LOCAL_URL: &str = "http://127.0.0.1:3691";
 
-enum OpenDappOutcome {
-    Opened,
-    ValidationError(String),
-    BrowserError(String),
-}
-
 /// Open a user-entered dApp URL in a new browser window after validation.
-fn try_open_dapp_from_input(raw: &str) -> OpenDappOutcome {
+fn try_open_dapp_from_input(raw: &str) -> Result<(), String> {
     let formatted = format_user_dapp_url(raw);
-    match validate_whitelisted_dapp_url(&formatted) {
-        Err(e) => OpenDappOutcome::ValidationError(e),
-        Ok(normalized) => match browser::open_trusted_dapp_url_new_window(&normalized) {
-            Ok(()) => OpenDappOutcome::Opened,
-            Err(e) => OpenDappOutcome::BrowserError(e),
-        },
-    }
+    browser::open_any_dapp_url(&formatted)
 }
 const PULSEX_SERVER_BIND: &str = "127.0.0.1:3691";
 
@@ -63,51 +51,8 @@ fn host_label(url: &str) -> String {
 }
 
 /// Either show the rocket warm-shell window or open a fresh one.
-fn open_dapp(url: &str, is_fast: bool) -> Result<(), String> {
-    if is_fast {
-        browser::open_trusted_dapp_url_prefer_warm_window(url)
-    } else {
-        browser::open_trusted_dapp_url_new_window(url)
-    }
-}
-
-/// Toggle a dApp in the per-chain fast-list, capped at 6, and persist to disk.
-fn apply_fast_toggle(
-    services: &AppServices,
-    mut fast_dapp_keys: Signal<HashSet<String>>,
-    mut err_sig: Signal<Option<String>>,
-    chain_id: u64,
-    key: String,
-) {
-    let mut next = fast_dapp_keys.read().clone();
-    if next.contains(&key) {
-        next.remove(&key);
-    } else if next.len() >= 6 {
-        err_sig.set(Some(
-            "You can select up to 6 fast dApps. Deselect one first.".into(),
-        ));
-        return;
-    } else {
-        next.insert(key);
-    }
-    err_sig.set(None);
-    let persisted: Vec<String> = next.iter().cloned().collect();
-    let chain_key = chain_id.to_string();
-    fast_dapp_keys.set(next);
-    let services = services.clone();
-    spawn(async move {
-        let _ = services
-            .persistence
-            .update_and_save(|st| {
-                let mut prefs = st.preferences.clone().unwrap_or_default();
-                if prefs.polling_interval_secs == 0 {
-                    prefs.polling_interval_secs = 10;
-                }
-                prefs.fast_dapps_by_chain_v1.insert(chain_key, persisted);
-                st.preferences = Some(prefs);
-            })
-            .await;
-    });
+fn open_dapp(url: &str) -> Result<(), String> {
+    browser::open_trusted_dapp_url_prefer_warm_window(url)
 }
 
 /// Kicks off the PulseX install/update on a background task. Failures surface
@@ -261,21 +206,13 @@ fn DappCard(
     url: String,
     description: String,
     category: String,
-    is_fast: bool,
-    fully_warmed: bool,
     remove_title: String,
     on_open: Callback<()>,
     on_remove: Callback<()>,
-    on_toggle_fast: Callback<()>,
     footer_trailing: Element,
 ) -> Element {
     let fav = google_favicon_url_for_dapp(&url).unwrap_or_default();
     let host = host_label(&url);
-    let rocket_class = if is_fast {
-        "btn dapp-card-icon-btn dapp-card-icon-btn--rocket-on"
-    } else {
-        "btn dapp-card-icon-btn dapp-card-icon-btn--rocket-off"
-    };
     rsx! {
         div {
             class: "dapp-card",
@@ -310,37 +247,7 @@ fn DappCard(
                         span { class: "dapp-card-host", "{host}" }
                     }
                     div { style: "display: flex; align-items: center; gap: 6px; flex-shrink: 0;",
-                        button {
-                            class: "{rocket_class}",
-                            title: "Prioritize this dApp for fast prewarm",
-                            onclick: move |e| {
-                                e.stop_propagation();
-                                on_toggle_fast.call(());
-                            },
-                            "🚀"
-                        }
                         {footer_trailing}
-                    }
-                }
-                if is_fast {
-                    div { style: "margin-top: 8px; display: flex; align-items: center; gap: 8px;",
-                        span {
-                            style: if fully_warmed {
-                                "font-size: 10px; font-weight: 700; color: #a8f6c3;"
-                            } else {
-                                "font-size: 10px; font-weight: 700; color: #ffd58a;"
-                            },
-                            if fully_warmed { "Ready" } else { "Loading" }
-                        }
-                        div { style: "height: 6px; flex: 1; border-radius: 999px; background: rgba(255,255,255,0.14); overflow: hidden;",
-                            div {
-                                style: if fully_warmed {
-                                    "height: 100%; width: 100%; background: rgba(15,161,95,0.95);"
-                                } else {
-                                    "height: 100%; width: 35%; background: rgba(214,164,38,0.95);"
-                                }
-                            }
-                        }
                     }
                 }
             }
@@ -364,7 +271,18 @@ pub fn DappsView(on_back: Callback<()>) -> Element {
     let selectors_booted = use_signal(|| false);
 
     let mut custom_url = use_signal(String::new);
-    let mut custom_dapps = use_signal(Vec::<CustomDappEntry>::new);
+    let initial_custom_dapps = services
+        .persistence
+        .snapshot()
+        .custom_trusted_dapps
+        .into_iter()
+        .map(|d| CustomDappEntry {
+            name: d.name,
+            url: d.url,
+            description: "Custom user-added dApp".into(),
+        })
+        .collect::<Vec<_>>();
+    let mut custom_dapps = use_signal(|| initial_custom_dapps);
     let mut hidden_core_urls = use_signal(Vec::<String>::new);
     let fast_dapp_keys = use_signal(HashSet::<String>::new);
     let last_fast_chain_loaded = use_signal(|| None::<u64>);
@@ -610,16 +528,8 @@ pub fn DappsView(on_back: Callback<()>) -> Element {
                 for d in custom_list.iter() {
                     {
                         let d = d.clone();
-                        let fast_key = browser::dapp_preference_key(&d.url);
-                        let is_fast = fast_dapp_keys.read().contains(&fast_key);
-                        let fully_warmed = is_fast
-                            && matches!(
-                                browser::dapp_warm_hint_for_url(&d.url),
-                                "Ready" | "Claimed"
-                            );
                         let remove_url = d.url.clone();
                         let open_url = d.url.clone();
-                        let services_for_toggle = services.clone();
                         rsx! {
                             DappCard {
                                 key: "{d.url}",
@@ -627,25 +537,23 @@ pub fn DappsView(on_back: Callback<()>) -> Element {
                                 url: d.url.clone(),
                                 description: d.description.clone(),
                                 category: "Custom".to_string(),
-                                is_fast,
-                                fully_warmed,
                                 remove_title: "Remove from your list".to_string(),
-                                on_open: move |_| match open_dapp(&open_url, is_fast) {
+                                on_open: move |_| match open_dapp(&open_url) {
                                     Ok(()) => dapp_open_error.set(None),
                                     Err(e) => dapp_open_error.set(Some(e)),
                                 },
-                                on_remove: move |_| {
-                                    let u = remove_url.clone();
-                                    custom_dapps.with_mut(|v| v.retain(|x| x.url != u));
-                                },
-                                on_toggle_fast: move |_| {
-                                    apply_fast_toggle(
-                                        &services_for_toggle,
-                                        fast_dapp_keys,
-                                        dapp_open_error,
-                                        active_chain_id(),
-                                        fast_key.clone(),
-                                    );
+                                on_remove: {
+                                    let services = services.clone();
+                                    move |_| {
+                                        let u = remove_url.clone();
+                                        custom_dapps.with_mut(|v| v.retain(|x| x.url != u));
+                                        let services = services.clone();
+                                        spawn(async move {
+                                            let _ = services.persistence.update_and_save(|st| {
+                                                st.custom_trusted_dapps.retain(|d| d.url != u);
+                                            }).await;
+                                        });
+                                    }
                                 },
                                 footer_trailing: rsx! {},
                             }
@@ -655,14 +563,6 @@ pub fn DappsView(on_back: Callback<()>) -> Element {
                 for entry in core_filtered.iter() {
                     {
                         let entry = *entry;
-                        let fast_key = browser::dapp_preference_key(entry.url);
-                        let is_fast = fast_dapp_keys.read().contains(&fast_key);
-                        let fully_warmed = is_fast
-                            && matches!(
-                                browser::dapp_warm_hint_for_url(entry.url),
-                                "Ready" | "Claimed"
-                            );
-                        let services_for_toggle = services.clone();
                         let is_pulsex_local = entry.url == PULSEX_LOCAL_URL;
                         let footer_trailing = if is_pulsex_local {
                             rsx! {
@@ -684,10 +584,8 @@ pub fn DappsView(on_back: Callback<()>) -> Element {
                                 url: entry.url.to_string(),
                                 description: entry.description.to_string(),
                                 category: entry.category.to_string(),
-                                is_fast,
-                                fully_warmed,
                                 remove_title: "Hide from list".to_string(),
-                                on_open: move |_| match open_dapp(entry.url, is_fast) {
+                                on_open: move |_| match open_dapp(entry.url) {
                                     Ok(()) => dapp_open_error.set(None),
                                     Err(e) => dapp_open_error.set(Some(e)),
                                 },
@@ -698,15 +596,6 @@ pub fn DappsView(on_back: Callback<()>) -> Element {
                                             v.push(u);
                                         }
                                     });
-                                },
-                                on_toggle_fast: move |_| {
-                                    apply_fast_toggle(
-                                        &services_for_toggle,
-                                        fast_dapp_keys,
-                                        dapp_open_error,
-                                        active_chain_id(),
-                                        fast_key.clone(),
-                                    );
                                 },
                                 footer_trailing,
                             }
@@ -735,7 +624,7 @@ pub fn DappsView(on_back: Callback<()>) -> Element {
                             return;
                         }
                         let formatted = format_user_dapp_url(&raw);
-                        match validate_whitelisted_dapp_url(&formatted) {
+                        match validate_potential_dapp_url(&formatted) {
                             Ok(normalized) => {
                                 let dup_core = TRUSTED_DAPP_ENTRIES.iter().any(|e| e.url == normalized);
                                 let dup_custom = custom_dapps.read().iter().any(|c| c.url == normalized);
@@ -746,11 +635,35 @@ pub fn DappsView(on_back: Callback<()>) -> Element {
                                 let name = host_label(&normalized);
                                 custom_dapps.with_mut(|v| {
                                     v.push(CustomDappEntry {
-                                        name,
+                                        name: name.clone(),
                                         url: normalized.clone(),
                                         description: "Custom user-added dApp".into(),
                                     });
                                 });
+
+                                // Dynamically whitelist host
+                                if let Ok(parsed) = url::Url::parse(&normalized) {
+                                    if let Some(host) = parsed.host_str() {
+                                        vaughan_trusted_hosts::add_custom_allowed_host(host.to_lowercase());
+                                    }
+                                }
+
+                                // Persist to state.json
+                                let name_for_save = name.clone();
+                                let url_for_save = normalized.clone();
+                                let services = services.clone();
+                                spawn(async move {
+                                    let new_dapp = vaughan_core::core::persistence::CustomDapp {
+                                        name: name_for_save,
+                                        url: url_for_save.clone(),
+                                    };
+                                    let _ = services.persistence.update_and_save(|st| {
+                                        if !st.custom_trusted_dapps.iter().any(|d| d.url == url_for_save) {
+                                            st.custom_trusted_dapps.push(new_dapp);
+                                        }
+                                    }).await;
+                                });
+
                                 url_bar_error.set(None);
                                 custom_url.set(String::new());
                             }
@@ -775,9 +688,8 @@ pub fn DappsView(on_back: Callback<()>) -> Element {
                             launching_custom.set(true);
                             url_bar_error.set(None);
                             match try_open_dapp_from_input(&raw) {
-                                OpenDappOutcome::Opened => dapp_open_error.set(None),
-                                OpenDappOutcome::ValidationError(err) => url_bar_error.set(Some(err)),
-                                OpenDappOutcome::BrowserError(err) => dapp_open_error.set(Some(err)),
+                                Ok(()) => dapp_open_error.set(None),
+                                Err(err) => dapp_open_error.set(Some(err)),
                             }
                             launching_custom.set(false);
                         }
@@ -795,9 +707,8 @@ pub fn DappsView(on_back: Callback<()>) -> Element {
                         launching_custom.set(true);
                         url_bar_error.set(None);
                         match try_open_dapp_from_input(&raw) {
-                            OpenDappOutcome::Opened => dapp_open_error.set(None),
-                            OpenDappOutcome::ValidationError(err) => url_bar_error.set(Some(err)),
-                            OpenDappOutcome::BrowserError(err) => dapp_open_error.set(Some(err)),
+                            Ok(()) => dapp_open_error.set(None),
+                            Err(err) => dapp_open_error.set(Some(err)),
                         }
                         launching_custom.set(false);
                     },
@@ -912,3 +823,20 @@ pub fn DappsView(on_back: Callback<()>) -> Element {
         }
     }
 }
+
+fn validate_potential_dapp_url(url_str: &str) -> Result<String, String> {
+    let u = Url::parse(url_str.trim()).map_err(|e| e.to_string())?;
+    let host = u.host_str().ok_or("URL missing host")?;
+    let h = host.trim().to_lowercase();
+    match u.scheme() {
+        "https" => Ok(u.to_string()),
+        "http" => {
+            if h != "localhost" && h != "127.0.0.1" {
+                return Err("Only https:// dApps are allowed (except http://localhost and http://127.0.0.1)".into());
+            }
+            Ok(u.to_string())
+        }
+        _ => Err("Invalid URL scheme. Must be https:// or http://".into()),
+    }
+}
+

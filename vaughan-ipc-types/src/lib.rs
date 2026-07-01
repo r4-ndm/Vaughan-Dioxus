@@ -42,6 +42,25 @@ pub enum IpcRequest {
     SignTypedData(SignTypedDataPayload),
     SwitchChain(SwitchChainPayload),
     GetNetworkInfo,
+    AddTrustedHost(AddTrustedHostPayload),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AddTrustedHostPayload {
+    pub name: String,
+    pub url: String,
+}
+
+impl AddTrustedHostPayload {
+    pub fn validate(&self) -> Result<(), ValidationError> {
+        if self.name.trim().is_empty() {
+            return Err(ValidationError::InvalidNetworkName);
+        }
+        if self.url.trim().is_empty() {
+            return Err(ValidationError::InvalidMessage);
+        }
+        Ok(())
+    }
 }
 
 impl IpcRequest {
@@ -52,6 +71,7 @@ impl IpcRequest {
             IpcRequest::SignMessage(p) => p.validate(),
             IpcRequest::SignTypedData(p) => p.validate(),
             IpcRequest::SwitchChain(p) => p.validate(),
+            IpcRequest::AddTrustedHost(p) => p.validate(),
         }
     }
 }
@@ -152,7 +172,14 @@ pub enum IpcResponse {
     SignedMessage(String),
     SignedTypedData(String),
     NetworkInfo(NetworkInfo),
+    CustomHosts(Vec<CustomDappInfo>),
     Error { code: u32, message: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CustomDappInfo {
+    pub name: String,
+    pub url: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

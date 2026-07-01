@@ -91,6 +91,103 @@
       border: 0;
       background: white;
     }
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.85);
+      z-index: 1000;
+      align-items: center;
+      justify-content: center;
+      font-family: inherit;
+    }
+    .modal-card {
+      background: var(--card-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      width: 420px;
+      padding: var(--space-4);
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      color: var(--fg);
+    }
+    .modal-title {
+      font-size: 16px;
+      font-weight: bold;
+      color: #ff4d4d; /* warning color */
+      margin: 0;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .modal-desc {
+      font-size: 13px;
+      color: var(--muted);
+      line-height: 1.5;
+      margin: 0;
+    }
+    .modal-field {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .modal-field label {
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      font-weight: 600;
+    }
+    .modal-field input[type="text"] {
+      background: var(--card);
+      border: 1px solid var(--border);
+      color: var(--fg);
+      padding: 9px 10px;
+      border-radius: var(--radius);
+      outline: none;
+    }
+    .modal-options {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-top: 4px;
+    }
+    .modal-option {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .modal-option input {
+      flex: none;
+      cursor: pointer;
+    }
+    .modal-buttons {
+      display: flex;
+      justify-content: flex-end;
+      gap: 12px;
+      margin-top: 8px;
+    }
+    .modal-btn {
+      padding: 8px 16px;
+      font-weight: bold;
+      border-radius: var(--radius);
+      cursor: pointer;
+    }
+    .modal-btn.primary {
+      background: #ff4d4d;
+      border-color: #ff4d4d;
+      color: white;
+    }
+    .modal-btn.primary:hover {
+      background: #ff3333;
+      border-color: #ff3333;
+    }
   </style>
 </head>
 <body>
@@ -100,6 +197,7 @@
     <button id="refreshBtn">⟳</button>
 
     <input id="addressBar" placeholder="Enter URL (e.g. https://example.com)" />
+    <button id="addWhitelistBtn" style="font-weight: bold; padding: 8px 14px;" title="Add to Whitelist">+</button>
 
     <div class="status" id="status">
       <span class="dot" id="statusDot"></span>
@@ -159,6 +257,16 @@
             var s = suffixes[i];
             if (h === s || h.endsWith("." + s)) return true;
           }
+          var custom = window.__VAUGHAN_CUSTOM_TRUSTED_HOSTS;
+          if (Array.isArray(custom)) {
+            for (var i = 0; i < custom.length; i++) {
+              var s = custom[i];
+              if (s) {
+                var sLower = s.toLowerCase();
+                if (h === sLower || h.endsWith("." + sLower)) return true;
+              }
+            }
+          }
           return false;
         } catch (e) {
           return false;
@@ -192,28 +300,10 @@
         if (e.data.cmd !== "ipc_request") return;
         var id = e.data.id;
         var args = e.data.args;
-        var inv =
-          window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke
-            ? window.__TAURI__.core.invoke
-            : window.__TAURI__ && window.__TAURI__.invoke
-            ? window.__TAURI__.invoke
-            : null;
         if (!e.source || !e.source.postMessage) return;
-        if (!inv) {
-          e.source.postMessage(
-            {
-              type: "VAUGHAN_IPC_RESPONSE",
-              id: id,
-              error: {
-                message: "Tauri invoke not ready in shell",
-                code: 4900,
-              },
-            },
-            e.origin
-          );
-          return;
-        }
-        inv("ipc_request", args)
+        if (!args || !args.request) return;
+
+        requestWallet(args.request.type, args.request.payload)
           .then(function (result) {
             e.source.postMessage(
               { type: "VAUGHAN_IPC_RESPONSE", id: id, result: result },
@@ -238,6 +328,109 @@
 
     // EIP-1193 / EIP-6963: provider_inject.js via Tauri `initialization_script_for_all_frames` (all frames).
 
+    let nextRpcId = 1;
+
+    async function requestWallet(type, payload) {
+      const port = window.__VAUGHAN_RPC_PORT__;
+      const token = window.__VAUGHAN_RPC_TOKEN__;
+      if (!port) {
+        throw new Error("Vaughan RPC port not configured");
+      }
+
+      let method;
+      let params = payload || [];
+      switch (type) {
+        case "GetNetworkInfo":
+          method = "vaughan_getNetworkInfo";
+          break;
+        case "GetAccounts":
+          method = "vaughan_getAccounts";
+          break;
+        case "SignTransaction":
+          method = "vaughan_signTransaction";
+          break;
+        case "SignMessage":
+          method = "vaughan_signMessage";
+          break;
+        case "AddTrustedHost":
+          method = "vaughan_addTrustedHost";
+          break;
+        case "RemoveTrustedHost":
+          method = "vaughan_removeTrustedHost";
+          break;
+        case "GetTrustedHosts":
+          method = "vaughan_getTrustedHosts";
+          break;
+        default:
+          throw new Error("Unknown wallet request type: " + type);
+      }
+
+      const body = {
+        jsonrpc: "2.0",
+        method: method,
+        params: params,
+        id: nextRpcId++
+      };
+
+      let attempts = 0;
+      let lastErr = null;
+      while (attempts < 3) {
+        try {
+          const res = await fetch(`http://127.0.0.1:${port}/rpc`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${token}`
+            },
+            body: JSON.stringify(body)
+          });
+          if (!res.ok) {
+            throw new Error(`HTTP error: ${res.status}`);
+          }
+          const json = await res.json();
+          if (json.error) {
+            const err = new Error(json.error.message);
+            err.code = json.error.code;
+            throw err;
+          }
+
+          let responseType;
+          switch (type) {
+            case "GetNetworkInfo":
+              responseType = "NetworkInfo";
+              break;
+            case "GetAccounts":
+              responseType = "Accounts";
+              break;
+            case "SignTransaction":
+              responseType = "SignedTransaction";
+              break;
+            case "SignMessage":
+              responseType = "SignedMessage";
+              break;
+            case "AddTrustedHost":
+            case "RemoveTrustedHost":
+            case "GetTrustedHosts":
+              responseType = "CustomHosts";
+              break;
+            default:
+              responseType = type;
+          }
+          return {
+            type: responseType,
+            payload: json.result
+          };
+        } catch (e) {
+          lastErr = e;
+          attempts++;
+          if (attempts < 3) {
+            await new Promise(resolve => setTimeout(resolve, 100));
+          }
+        }
+      }
+      throw lastErr || new Error("Failed to request wallet");
+    }
+
     function tauriInvoke(cmd, args) {
       const inv =
         window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke
@@ -245,14 +438,20 @@
           : window.__TAURI__ && window.__TAURI__.invoke
           ? window.__TAURI__.invoke
           : null;
-      if (!inv) return Promise.reject(new Error("Tauri invoke unavailable"));
-      return inv(cmd, args);
+      if (inv) {
+        return inv(cmd, args);
+      }
+      if (cmd === "ipc_request" && args && args.request) {
+        return requestWallet(args.request.type, args.request.payload);
+      }
+      return Promise.reject(new Error("Tauri invoke unavailable"));
     }
 
     const backBtn = document.getElementById("backBtn");
     const fwdBtn = document.getElementById("fwdBtn");
     const refreshBtn = document.getElementById("refreshBtn");
     const addressBar = document.getElementById("addressBar");
+    const addWhitelistBtn = document.getElementById("addWhitelistBtn");
     const iframe = document.getElementById("webview");
 
     const statusDot = document.getElementById("statusDot");
@@ -267,6 +466,28 @@
       if (variant === "connected") statusDot.classList.add("connected");
       if (variant === "error") statusDot.classList.add("error");
       statusText.textContent = text;
+    }
+
+    function updateWhitelistButtonState(url) {
+      if (!url || url === "about:blank") {
+        addWhitelistBtn.disabled = true;
+        return;
+      }
+      try {
+        var u = new URL(url);
+        if (u.protocol === "http:" && (u.hostname === "localhost" || u.hostname === "127.0.0.1")) {
+          addWhitelistBtn.disabled = true;
+          return;
+        }
+        if (u.protocol !== "https:" && u.protocol !== "http:") {
+          addWhitelistBtn.disabled = true;
+          return;
+        }
+        var isTrusted = trustedWalletBridgeOrigin(url);
+        addWhitelistBtn.disabled = isTrusted;
+      } catch (e) {
+        addWhitelistBtn.disabled = true;
+      }
     }
 
     function navigate(url, { push = true } = {}) {
@@ -286,6 +507,8 @@
 
       backBtn.disabled = historyIndex <= 0;
       fwdBtn.disabled = historyIndex >= historyStack.length - 1;
+
+      updateWhitelistButtonState(normalized);
     }
 
     // Called from Rust when the wallet launches the browser with `--url` (trusted dApp links).
@@ -321,12 +544,134 @@
       setTimeout(() => (iframe.src = current), 50);
     });
 
-    addressBar.addEventListener("keydown", (e) => {
-      if (e.key !== "Enter") return;
-      let url = addressBar.value.trim();
-      if (!/^https?:\/\//i.test(url)) url = "https://" + url;
-      navigate(url);
-    });
+     addressBar.addEventListener("keydown", (e) => {
+       if (e.key !== "Enter") return;
+       let url = addressBar.value.trim();
+       if (!/^https?:\/\//i.test(url)) url = "https://" + url;
+       navigate(url);
+     });
+
+     function getBaseDomain(hostname) {
+       const parts = hostname.split('.');
+       if (parts.length <= 2) return hostname;
+       const secondToLast = parts[parts.length - 2];
+       const commonTlds = ['com', 'co', 'net', 'org', 'gov', 'edu'];
+       if (commonTlds.includes(secondToLast) && parts.length > 2) {
+         return parts.slice(-3).join('.');
+       }
+       return parts.slice(-2).join('.');
+     }
+
+     function isIpAddress(hostname) {
+       if (/^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(hostname)) return true;
+       if (hostname.includes(':') || (hostname.startsWith('[') && hostname.endsWith(']'))) return true;
+       return false;
+     }
+
+     addWhitelistBtn.addEventListener("click", () => {
+       let currentUrl = addressBar.value.trim();
+       if (!currentUrl || currentUrl === "about:blank") return;
+       try {
+         let u = new URL(currentUrl);
+         let hostname = u.hostname.toLowerCase();
+         let baseDomain = getBaseDomain(hostname);
+         let isIp = isIpAddress(hostname);
+         
+         document.getElementById("dappNameInput").value = hostname;
+         
+         const scopeBase = document.getElementById("scopeBase");
+         const scopeBaseText = document.getElementById("scopeBaseText");
+         const scopeExact = document.getElementById("scopeExact");
+         const scopeExactText = document.getElementById("scopeExactText");
+
+         if (isIp) {
+           scopeBase.disabled = true;
+           scopeBaseText.textContent = "Base domain (disabled for IP addresses)";
+           scopeExact.checked = true;
+           scopeExactText.textContent = `Whitelist exact IP (${hostname})`;
+         } else {
+           scopeBase.disabled = false;
+           scopeBaseText.textContent = `Whitelist base domain (*.${baseDomain})`;
+           scopeBase.checked = true;
+           scopeExactText.textContent = `Whitelist exact domain (${hostname})`;
+         }
+         
+         document.getElementById("whitelistModal").style.display = "flex";
+       } catch (e) {
+         setStatus("error", "Invalid URL: " + e.message);
+       }
+     });
+
+     document.getElementById("modalCancelBtn").addEventListener("click", () => {
+       document.getElementById("whitelistModal").style.display = "none";
+     });
+
+     async function syncWhitelist(hostsPayload) {
+        const hostnames = hostsPayload.map(d => {
+          try {
+            return new URL(d.url).hostname.toLowerCase();
+          } catch(e) {
+            return "";
+          }
+        }).filter(Boolean);
+
+        window.__VAUGHAN_CUSTOM_TRUSTED_HOSTS = hostnames;
+
+        const inv =
+          window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke
+            ? window.__TAURI__.core.invoke
+            : window.__TAURI__ && window.__TAURI__.invoke
+            ? window.__TAURI__.invoke
+            : null;
+        if (inv) {
+          try {
+            await inv("update_whitelist", { hosts: hostnames });
+          } catch(e) {
+            console.error("Failed to sync whitelist with Rust backend:", e);
+          }
+        }
+      }
+
+     document.getElementById("modalTrustBtn").addEventListener("click", async () => {
+       let currentUrl = addressBar.value.trim();
+       if (!currentUrl || currentUrl === "about:blank") return;
+       try {
+         let u = new URL(currentUrl);
+         let hostname = u.hostname.toLowerCase();
+         let baseDomain = getBaseDomain(hostname);
+         
+         let name = document.getElementById("dappNameInput").value.trim();
+         if (!name) name = hostname;
+
+         let useBase = document.getElementById("scopeBase").checked;
+         let domainToWhitelist = useBase ? baseDomain : hostname;
+
+         let targetUrl = useBase ? `https://${baseDomain}` : currentUrl;
+
+         document.getElementById("whitelistModal").style.display = "none";
+         setStatus(null, "Adding to whitelist...");
+         
+         const resp = await tauriInvoke("ipc_request", {
+           request: {
+             type: "AddTrustedHost",
+             payload: { name: name, url: targetUrl }
+           }
+         });
+         
+         if (resp && resp.type === "CustomHosts") {
+           await syncWhitelist(resp.payload);
+
+           setStatus("connected", `Whitelisted ${domainToWhitelist}!`);
+           updateWhitelistButtonState(currentUrl);
+           
+           navigate(currentUrl, { push: false });
+         } else {
+           throw new Error("Invalid response from wallet");
+         }
+       } catch (e) {
+         setStatus("error", "Failed to whitelist: " + (e.message || e));
+       }
+     });
 
     async function checkConnection() {
       try {
@@ -342,6 +687,11 @@
           "connected",
           `Connected to network: ${net.name} (${net.chain_id})`
         );
+
+        const hostsResp = await requestWallet("GetTrustedHosts");
+        if (hostsResp && hostsResp.type === "CustomHosts") {
+          await syncWhitelist(hostsResp.payload);
+        }
       } catch (e) {
         setStatus("error", "IPC unavailable");
       }
@@ -365,5 +715,37 @@
       }
     });
   </script>
+  <div id="whitelistModal" class="modal-overlay">
+    <div class="modal-card">
+      <h2 class="modal-title">⚠️ Security Alert</h2>
+      <p class="modal-desc">
+        Whitelisting allows this site to request transaction signatures and read your active account address. Only trust websites you know.
+      </p>
+      
+      <div class="modal-field">
+        <label for="dappNameInput">dApp Name</label>
+        <input id="dappNameInput" type="text" placeholder="e.g. My Custom dApp" />
+      </div>
+
+      <div class="modal-field">
+        <label>Scope</label>
+        <div class="modal-options">
+          <label class="modal-option">
+            <input type="radio" name="whitelistScope" id="scopeBase" checked />
+            <span id="scopeBaseText">Whitelist base domain</span>
+          </label>
+          <label class="modal-option">
+            <input type="radio" name="whitelistScope" id="scopeExact" />
+            <span id="scopeExactText">Whitelist exact domain only</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="modal-buttons">
+        <button id="modalCancelBtn" class="modal-btn">Cancel</button>
+        <button id="modalTrustBtn" class="modal-btn primary">Trust & Connect</button>
+      </div>
+    </div>
+  </div>
 </body>
 </html>
